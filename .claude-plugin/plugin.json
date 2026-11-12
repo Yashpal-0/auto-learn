@@ -1,0 +1,28 @@
+{
+  "name": "auto-learn",
+  "version": "0.1.0",
+  "description": "Learns skills from your work: after a turn that worked out something reusable, a background fork of the session saves the procedure as a personal skill that Claude Code offers in later sessions.",
+  "author": {
+    "name": "Yashpal-0",
+    "url": "https://github.com/Yashpal-0"
+  },
+  "homepage": "https://github.com/Yashpal-0/auto-learn",
+  "repository": "https://github.com/Yashpal-0/auto-learn",
+  "license": "MIT",
+  "keywords": ["skills", "learning", "automation", "hooks", "mcp"],
+  "userConfig": {
+    "autoCapture": {
+      "type": "boolean",
+      "title": "Auto-run capture after each turn",
+      "description": "After a turn with enough tool calls, fork the session in the background and let Claude save what the turn taught as a skill. Each review uses extra tokens. When off, Claude can still save skills itself with the manage_skill tool.",
+      "default": true
+    },
+    "minToolCalls": {
+      "type": "number",
+      "title": "Minimum tool calls per turn",
+      "description": "A turn needs at least this many tool calls before it is reviewed for skills.",
+      "default": 5,
+      "min": 0
+    }
+  }
+}

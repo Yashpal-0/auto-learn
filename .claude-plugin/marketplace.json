@@ -1,0 +1,14 @@
+{
+  "name": "auto-learn",
+  "description": "Skills that Claude Code learns from your own work.",
+  "owner": {
+    "name": "Yashpal-0"
+  },
+  "plugins": [
+    {
+      "name": "auto-learn",
+      "source": "./",
+      "description": "Saves procedures that worked as personal skills, which Claude Code offers in later sessions."
+    }
+  ]
+}
