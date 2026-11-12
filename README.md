@@ -77,6 +77,8 @@ auto-learn writes one JSON object per line to `auto-learn.log` in its data folde
 - `skip`: a turn was not reviewed, with the reason.
 - `capture`: a review finished, with its outcome (`ok`, `skipped`, `aborted`, `timeout` or `error`) and, for a review that ran, its model turns, duration, tokens, cost, advisor calls, refused tool calls, and the skills it created, updated or deleted.
 
+`costUsd` is what the review itself cost, at list price. When a session has been resumed, Claude Code starts a fork's cost counter from the cost it recorded for the session when it last exited, so the total it reports for the fork includes the session's earlier cost. auto-learn reads that recorded cost from `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` when that is set), subtracts it, and logs it as `sessionCostUsd`. If that file exists but cannot be read, auto-learn logs Claude Code's total as `reportedCostUsd` instead of `costUsd`. Version 0.1.0 logged that total as `costUsd`, so its entries for resumed sessions overstate what reviews cost.
+
 The log holds no conversation text. It is readable only by you, and it rotates at 1 MiB, keeping one older file as `auto-learn.log.1`. `claude plugin uninstall` deletes it along with the data folder unless you pass `--keep-data`.
 
 ```sh
@@ -85,9 +87,20 @@ tail -n 5 ~/.claude/plugins/data/auto-learn-auto-learn/auto-learn.log
 
 ## Cost
 
-Each review is one more Claude request on your account with the session's model, or two to four when Claude saves a skill. The fork sends the session's context again, but reads it from the prompt cache, so a review costs a small part of what the turn did.
+A review is one to five more Claude requests on your account, with the session's model; saving a skill takes more of them. Each request sends the session's whole context again. Reading that context from the prompt cache is cheap, but the reply, thinking included, is billed in full, so on a large model a review costs real money. The cost grows with the length of the session.
 
-Measured on a session with a 90,000-token context on Claude Haiku 5.5, four of five reviews cost $0.001 to $0.005. Priced at Claude Opus 5.5 list rates, the same token counts come to about $0.04 for a review that saves nothing and $0.10 to $0.12 for one that saves a skill. The fifth review also made a side request of about 60,000 tokens that missed the prompt cache, for a reason not yet known; at Opus 5.5 rates, such a request adds about $0.30. The cost grows with the length of the session.
+Measured costs, at list price:
+
+| Model | Context | Review | Cost |
+| --- | --- | --- | --- |
+| Claude Haiku 5.5 | about 90,000 tokens | saved nothing or one skill | $0.001 to $0.009 |
+| Claude Opus 5.5 | about 146,000 tokens | saved a skill in 4 model turns | about $0.33 |
+| Claude Opus 5.5 | about 146,000 tokens | saved a skill in 5 model turns, with one advisor call | about $1.09 |
+
+The two Opus reviews added about 11% to what their session cost by itself; they cost 27% and 190% of the turn each one reviewed. Version 0.1.0 logged them with the session's earlier cost included, so their figures here were worked out afterwards from Claude Code's totals.
+
+- The advisor runs on Anthropic's servers, so the review's PreToolUse hook cannot refuse it. The request asks Claude not to call it, but Claude sometimes does; one advisor call cost about $0.60 to $0.70 on Opus 5.5. Turning the advisor off for reviews would change the fork's tool list, and the fork would then miss the session's prompt cache, which costs more.
+- Now and then a review makes a side request that misses the prompt cache, for a reason not yet known. One of about 60,000 tokens was measured on Haiku 5.5; at Opus 5.5 rates, it would add about $0.30.
 
 The `costUsd` field in the [log](#log) is the full cost of a review, side requests included. Claude Code reports it at list price; on a Claude subscription, reviews count toward your plan's usage limits instead.
 
@@ -96,6 +109,7 @@ To spend less, raise `minToolCalls`, or turn `autoCapture` off and leave saving 
 ## Privacy
 
 - auto-learn reads the session transcript under `~/.claude/projects` on your machine, to count tool calls and find where the turn ended.
+- auto-learn reads Claude Code's `~/.claude.json` for the cost Claude Code recorded for the session, and logs only that number.
 - A review is a Claude Code request like any turn: the fork sends the session's conversation to Claude again, through your own Claude Code account and settings.
 - The request tells Claude never to save secrets, credentials or personal data in a skill, and `manage_skill` refuses content that looks like a credential.
 - Skills are written only to your skill folder, and the log holds no conversation text.

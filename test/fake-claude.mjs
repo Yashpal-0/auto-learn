@@ -7,8 +7,11 @@
 //   garbage print text that is not JSON
 //   hang    never finish
 // With --verbose it prints every message as one JSON array, as claude does.
+// Like claude, it counts the cost recorded in $CLAUDE_CONFIG_DIR/.claude.json
+// for the session it resumes into its totals, unless $FAKE_CLAUDE_RESTORE is off.
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 const MCP_SERVER_SCRIPT = new URL("../scripts/mcp-server.mjs", import.meta.url).pathname;
@@ -23,14 +26,33 @@ const env = Object.fromEntries(
 );
 writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, stdin, cwd: process.cwd(), env }));
 
+const OWN_COST_USD = 0.0123;
+const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : "claude-test-1";
+
+/** What the configuration recorded for the resumed session when it last exited. */
+function restoredCost() {
+	let config;
+	try {
+		config = JSON.parse(readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8"));
+	} catch {
+		return { costUsd: 0, modelUsage: {} };
+	}
+	const resumed = args[args.indexOf("--resume") + 1];
+	const project = Object.values(config.projects ?? {}).find((entry) => entry.lastSessionId === resumed);
+	if (!project || process.env.FAKE_CLAUDE_RESTORE === "off") return { costUsd: 0, modelUsage: {} };
+	return { costUsd: project.lastCost, modelUsage: project.lastModelUsage };
+}
+
+const restored = restoredCost();
 const result = (fields = {}) => ({
 	type: "result",
 	subtype: "success",
 	is_error: false,
 	num_turns: 2,
 	result: "",
-	total_cost_usd: 0.0123,
+	total_cost_usd: restored.costUsd + OWN_COST_USD,
 	usage: { input_tokens: 100, cache_creation_input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 20 },
+	modelUsage: { ...restored.modelUsage, [model]: { costUSD: (restored.modelUsage[model]?.costUSD ?? 0) + OWN_COST_USD } },
 	...fields,
 });
 

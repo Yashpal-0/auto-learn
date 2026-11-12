@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { dataDir, displayPath, loadOptions, skillsDir } from "../scripts/lib/config.mjs";
+import { claudeGlobalConfigFile, dataDir, displayPath, loadOptions, skillsDir } from "../scripts/lib/config.mjs";
 
 test("options fall back to the manifest defaults", () => {
 	assert.deepEqual(loadOptions({}), { autoCapture: true, minToolCalls: 5 });
@@ -31,6 +31,11 @@ test("the skill library follows CLAUDE_CONFIG_DIR unless AUTO_LEARN_SKILLS_DIR n
 test("plugin state lives in CLAUDE_PLUGIN_DATA", () => {
 	assert.equal(dataDir({ CLAUDE_PLUGIN_DATA: "/plugin-data" }), path.resolve("/plugin-data"));
 	assert.equal(dataDir({ CLAUDE_CONFIG_DIR: "/cfg" }), path.resolve("/cfg/auto-learn"));
+});
+
+test("Claude Code's global configuration is .claude.json in CLAUDE_CONFIG_DIR, or else in the home directory itself", () => {
+	assert.equal(claudeGlobalConfigFile({}, "/home/u"), path.join("/home/u", ".claude.json"));
+	assert.equal(claudeGlobalConfigFile({ CLAUDE_CONFIG_DIR: "/cfg" }, "/home/u"), path.join("/cfg", ".claude.json"));
 });
 
 test("displayPath shows the home directory as ~", () => {

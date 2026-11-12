@@ -3,7 +3,7 @@
 // the turn taught as a skill, with every tool but manage_skill refused.
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import { skillsDir } from "./config.mjs";
+import { claudeGlobalConfigFile, skillsDir } from "./config.mjs";
 import { captureNudge } from "./prompts.mjs";
 import { managedSkillVersions } from "./skills.mjs";
 import { acquireLock, hasJob, takeJob } from "./state.mjs";
@@ -159,9 +159,9 @@ function changedSkills(before, after) {
  * back as the record's outcome rather than an exception, so one bad capture
  * never stops the queue. The flags were verified with Claude Code 2.1.322.
  *
- * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted", turns?: number, costUsd?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, advisorCalls?: number, refusedCalls?: number, reason?: string, error?: string}>}
+ * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted", turns?: number, costUsd?: number, sessionCostUsd?: number, reportedCostUsd?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, advisorCalls?: number, refusedCalls?: number, reason?: string, error?: string}>}
  */
-export function runFork({ sessionId, forkAt, model, effort, cwd, env, signal, timeoutMs = CAPTURE_TIMEOUT_MS }) {
+export async function runFork({ sessionId, forkAt, model, effort, cwd, env, signal, timeoutMs = CAPTURE_TIMEOUT_MS }) {
 	const args = [
 		"-p",
 		"--resume",
@@ -184,6 +184,8 @@ export function runFork({ sessionId, forkAt, model, effort, cwd, env, signal, ti
 		...(model ? ["--model", model] : []),
 		...(effort ? ["--effort", effort] : []),
 	];
+	// Read before the fork starts, since the fork starts its cost counters from what the file holds then.
+	const recorded = await recordedSessionCost(sessionId, env);
 	return new Promise((resolve) => {
 		const child = spawn("claude", args, { cwd, env: forkEnvironment(env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 		const stdout = boundedSink(child.stdout, MAX_STDOUT_BYTES);
@@ -210,7 +212,7 @@ export function runFork({ sessionId, forkAt, model, effort, cwd, env, signal, ti
 		child.once("error", (error) =>
 			finish({ outcome: "error", error: error.code === "ENOENT" ? "the claude CLI was not found on PATH" : error.message }),
 		);
-		child.once("close", (code, exitSignal) => finish(stopped ?? resultRecord(stdout(), stderr(), code ?? exitSignal)));
+		child.once("close", (code, exitSignal) => finish(stopped ?? resultRecord(stdout(), stderr(), code ?? exitSignal, recorded)));
 		// claude may exit before reading the whole request; its exit status tells why.
 		child.stdin.on("error", () => {});
 		child.stdin.end(captureNudge(MANAGE_SKILL_TOOL));
@@ -237,7 +239,48 @@ function boundedSink(stream, limit) {
 	return () => Buffer.concat(chunks).toString("utf8");
 }
 
-function resultRecord(stdout, stderr, exitStatus) {
+const NO_SESSION_COST = { costUsd: 0, modelUsage: {} };
+
+/**
+ * What Claude Code recorded for the session when it last exited or switched
+ * to another conversation. Claude Code 2.1.322 starts a fork that resumes the
+ * session from this record, so the totals it reports for the fork include it.
+ *
+ * @returns {Promise<{costUsd: number, modelUsage: object} | undefined>} undefined when the record cannot be read.
+ */
+async function recordedSessionCost(sessionId, env) {
+	let config;
+	try {
+		config = JSON.parse(await fs.readFile(claudeGlobalConfigFile(env), "utf8"));
+	} catch (error) {
+		return error.code === "ENOENT" ? NO_SESSION_COST : undefined;
+	}
+	const project = Object.values(config?.projects ?? {}).find((entry) => entry?.lastSessionId === sessionId);
+	if (!project?.lastCost) return NO_SESSION_COST;
+	const { lastCost, lastModelUsage } = project;
+	const isReadable = Number.isFinite(lastCost) && typeof lastModelUsage === "object" && Object.keys(lastModelUsage ?? {}).length > 0;
+	return isReadable ? { costUsd: lastCost, modelUsage: lastModelUsage } : undefined;
+}
+
+/**
+ * The fork's own cost: claude's total less the session's recorded cost, when
+ * the fork's per-model totals show that it counted on from that record.
+ */
+function forkCost(result, recorded) {
+	const total = result.total_cost_usd;
+	if (typeof total !== "number") return {};
+	if (!recorded) return { reportedCostUsd: total };
+	if (recorded.costUsd > 0 && countedOnFrom(result.modelUsage, recorded.modelUsage)) {
+		return { costUsd: Math.round((total - recorded.costUsd) * 1e8) / 1e8, sessionCostUsd: recorded.costUsd };
+	}
+	return { costUsd: total };
+}
+
+function countedOnFrom(totals, recorded) {
+	return Object.entries(recorded).every(([model, usage]) => (totals?.[model]?.costUSD ?? 0) >= (usage?.costUSD ?? 0));
+}
+
+function resultRecord(stdout, stderr, exitStatus, recorded) {
 	let output;
 	try {
 		output = JSON.parse(stdout);
@@ -256,7 +299,7 @@ function resultRecord(stdout, stderr, exitStatus) {
 	const record = {
 		outcome: result.is_error ? "error" : "ok",
 		turns: result.num_turns,
-		costUsd: result.total_cost_usd,
+		...forkCost(result, recorded),
 		inputTokens: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
 		cacheReadTokens: usage.cache_read_input_tokens ?? 0,
 		outputTokens: usage.output_tokens,

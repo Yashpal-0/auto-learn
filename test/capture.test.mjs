@@ -48,6 +48,7 @@ async function world(t, mode, entries = [...turnWithToolCalls(5), entry.summary(
 		FAKE_CLAUDE_RECORD: record,
 		CLAUDE_PLUGIN_DATA: path.join(root, "data"),
 		AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"),
+		CLAUDE_CONFIG_DIR: path.join(root, "config"),
 	};
 	await fs.mkdir(env.CLAUDE_PLUGIN_DATA);
 	const projectDir = path.join(root, "project");
@@ -62,6 +63,14 @@ async function world(t, mode, entries = [...turnWithToolCalls(5), entry.summary(
 
 const flagValue = (args, flag) => args[args.indexOf(flag) + 1];
 const fork = (w, options = {}) => runFork({ sessionId: "s1", forkAt: "u12", cwd: w.job.projectDir, env: w.env, ...options });
+
+/** Writes Claude Code's global configuration, as it reads after `sessionId` exited having cost `costUsd`. */
+async function recordSessionCost(w, sessionId, costUsd, text) {
+	const lastModelUsage = { "claude-test-1": { costUSD: costUsd - 1 }, "claude-test-2": { costUSD: 1 } };
+	const projects = { "/work/project": { lastSessionId: sessionId, lastCost: costUsd, lastModelUsage } };
+	await fs.mkdir(w.env.CLAUDE_CONFIG_DIR, { recursive: true });
+	await fs.writeFile(path.join(w.env.CLAUDE_CONFIG_DIR, ".claude.json"), text ?? JSON.stringify({ projects }));
+}
 
 /** Waits for a file that a child process writes; real time, since the child runs on its own clock. */
 async function waitForFile(file, timeoutMs = 10_000) {
@@ -178,6 +187,33 @@ test("a failed, garbled, missing or hung claude is reported, not thrown", async 
 
 	const hung = await world(t, "hang");
 	assert.deepEqual(await fork(hung, { timeoutMs: 300 }), { outcome: "timeout" });
+});
+
+test("the logged cost leaves out the session's earlier cost, which claude counts into a resumed fork's total", async (t) => {
+	const resumed = await world(t, "ok");
+	await recordSessionCost(resumed, "s1", 11);
+	const { costUsd, sessionCostUsd, reportedCostUsd } = await fork(resumed);
+	assert.deepEqual({ costUsd, sessionCostUsd, reportedCostUsd }, { costUsd: 0.0123, sessionCostUsd: 11, reportedCostUsd: undefined });
+
+	const other = await world(t, "ok");
+	await recordSessionCost(other, "another-session", 11);
+	const record = await fork(other);
+	assert.deepEqual([record.costUsd, record.sessionCostUsd], [0.0123, undefined]);
+});
+
+test("the full total is logged as the cost when the fork did not count on from the session's record", async (t) => {
+	const w = await world(t, "ok");
+	w.env.FAKE_CLAUDE_RESTORE = "off";
+	await recordSessionCost(w, "s1", 11);
+	const { costUsd, sessionCostUsd } = await fork(w);
+	assert.deepEqual({ costUsd, sessionCostUsd }, { costUsd: 0.0123, sessionCostUsd: undefined });
+});
+
+test("when Claude Code's configuration cannot be read, claude's total is logged under its own name", async (t) => {
+	const w = await world(t, "ok");
+	await recordSessionCost(w, "s1", 11, '{"projects": {');
+	const { costUsd, reportedCostUsd } = await fork(w);
+	assert.deepEqual({ costUsd, reportedCostUsd }, { costUsd: undefined, reportedCostUsd: 0.0123 });
 });
 
 test("runFork stops the fork when aborted, and says why", async (t) => {
