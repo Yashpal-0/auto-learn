@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { captureNudge, fill, guidanceText, manageSkillDescription } from "../scripts/lib/prompts.mjs";
+import { captureNudge, fill, guidanceText, learnedSkillsText, manageSkillDescription } from "../scripts/lib/prompts.mjs";
 
 test("fill substitutes each placeholder once and refuses a missing value", () => {
 	assert.equal(fill("{{a}} and {{b}}", { a: "{{b}}", b: "x" }), "{{b}} and x");
@@ -24,4 +24,34 @@ test("the capture request says it is automatic and how to load manage_skill", ()
 	assert.match(nudge, /^Automatic skill review/);
 	assert.ok(nudge.includes(`select:${tool}`), nudge);
 	assert.doesNotMatch(nudge, /\{\{/);
+});
+
+test("the learned-skill listing gives each skill a short description", () => {
+	assert.equal(learnedSkillsText([]), "");
+	const sentence = "Use when the docs build fails on a missing theme package.";
+	const text = learnedSkillsText([
+		{ name: "short-skill", description: "Use when testing" },
+		{ name: "sentence-skill", description: `${sentence} ${"More detail follows here. ".repeat(10)}` },
+		{ name: "long-skill", description: "words ".repeat(80).trim() },
+		{ name: "bare-skill", description: "" },
+	]);
+	assert.match(text, /^## Learned skills\n/);
+	assert.doesNotMatch(text, /\{\{/);
+	const lines = text.split("\n").filter((line) => line.startsWith("- "));
+	assert.equal(lines[0], "- short-skill: Use when testing");
+	assert.equal(lines[1], `- sentence-skill: ${sentence}`);
+	assert.match(lines[2], /^- long-skill: (words ){20,}words…$/);
+	assert.ok(lines[2].length <= "- long-skill: ".length + 160, lines[2]);
+	assert.equal(lines[3], "- bare-skill");
+	assert.equal(lines.length, 4);
+});
+
+test("the learned-skill listing stops at its size limit and says how many older skills it left out", () => {
+	const skills = Array.from({ length: 100 }, (_, i) => ({ name: `skill-${i}`, description: "x".repeat(100) }));
+	const text = learnedSkillsText(skills);
+	const listed = text.split("\n").filter((line) => line.startsWith("- skill-"));
+	assert.ok(listed.length > 10 && listed.length < 100, `${listed.length} listed`);
+	assert.equal(listed[0], `- skill-0: ${"x".repeat(100)}`);
+	assert.ok(listed.join("\n").length <= 4000, `${listed.join("\n").length} characters`);
+	assert.ok(text.endsWith(`\n- ${100 - listed.length} older learned skills are not listed here.`), text.slice(-80));
 });

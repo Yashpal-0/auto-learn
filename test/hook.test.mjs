@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { runHook } from "../scripts/lib/hook.mjs";
+import { manageSkill } from "../scripts/lib/skills.mjs";
 import { queueCapture, readSessionState, takeJob } from "../scripts/lib/state.mjs";
 import { entry, tempDir, toJsonl, turnWithToolCalls } from "./helpers.mjs";
 
@@ -15,6 +16,7 @@ async function session(t, extraEnv = {}) {
 		CLAUDE_PLUGIN_DATA: path.join(root, "data"),
 		AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"),
 		CLAUDE_PROJECT_DIR: path.join(root, "project"),
+		CLAUDE_CONFIG_DIR: path.join(root, "config"),
 		CLAUDE_CODE_SESSION_ATTENDED: "1",
 		...extraEnv,
 	};
@@ -47,6 +49,50 @@ test("session start adds the skill guidance and marks where the next turn begins
 	assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
 	assert.match(output.hookSpecificOutput.additionalContext, /manage_skill/);
 	assert.deepEqual(await s.state(), { offset: await s.size(), toolCalls: 0 });
+});
+
+/** Saves a learned skill in the session's skill library, as manage_skill does. */
+const learn = (s, name, description = `Use for ${name}`) =>
+	manageSkill({ action: "create", name, description, body: "1. Run it." }, { skillsDir: s.env.AUTO_LEARN_SKILLS_DIR });
+
+/** The names in the learned-skill listing that session start adds. */
+async function listedSkills(s, source = "startup") {
+	const context = (await s.run("session-start", { source })).hookSpecificOutput.additionalContext;
+	const [, listing = ""] = context.split("## Learned skills");
+	return listing.split("\n").flatMap((line) => (line.startsWith("- ") ? [line.slice(2)] : []));
+}
+
+test("session start lists the learned skills after the guidance, again after compaction", async (t) => {
+	const s = await session(t);
+	await learn(s, "deploy-docs", "Use when publishing the docs");
+	for (const source of ["startup", "resume", "clear", "compact"]) {
+		const context = (await s.run("session-start", { source })).hookSpecificOutput.additionalContext;
+		assert.match(context, /manage_skill[\s\S]*\n## Learned skills\n[\s\S]*\n- deploy-docs: Use when publishing the docs$/, source);
+	}
+});
+
+test("session start without learned skills adds the guidance alone", async (t) => {
+	const s = await session(t);
+	assert.deepEqual(await listedSkills(s), []);
+	const context = (await s.run("session-start", { source: "startup" })).hookSpecificOutput.additionalContext;
+	assert.doesNotMatch(context, /Learned skills/);
+});
+
+test("session start leaves out the learned skills that the user's settings hide from Claude", async (t) => {
+	const s = await session(t);
+	for (const name of ["hidden-skill", "name-only-skill", "own-only-skill", "shown-skill", "plain-skill"]) await learn(s, name);
+	await fs.mkdir(s.env.CLAUDE_CONFIG_DIR, { recursive: true });
+	const skillOverrides = { "hidden-skill": "off", "name-only-skill": "name-only", "own-only-skill": "user-invocable-only", "shown-skill": "on" };
+	await fs.writeFile(path.join(s.env.CLAUDE_CONFIG_DIR, "settings.json"), JSON.stringify({ skillOverrides }));
+	assert.deepEqual((await listedSkills(s)).map((line) => line.split(":")[0]).sort(), ["plain-skill", "shown-skill"]);
+});
+
+test("a settings file that is not valid JSON hides no learned skill", async (t) => {
+	const s = await session(t);
+	await learn(s, "deploy-docs");
+	await fs.mkdir(s.env.CLAUDE_CONFIG_DIR, { recursive: true });
+	await fs.writeFile(path.join(s.env.CLAUDE_CONFIG_DIR, "settings.json"), '{"skillOverrides": {');
+	assert.deepEqual(await listedSkills(s), ["deploy-docs: Use for deploy-docs"]);
 });
 
 test("a new session starts its first turn at the beginning of the transcript", async (t) => {

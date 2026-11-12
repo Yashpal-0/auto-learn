@@ -1,6 +1,6 @@
 # auto-learn
 
-auto-learn lets Claude Code learn skills from your own work. After a turn in which Claude worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background copy of the session looks back at the turn and saves the procedure as a personal skill. Claude Code then offers that skill in later sessions whenever a task matches it.
+auto-learn lets Claude Code learn skills from your own work. After a turn in which Claude worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background copy of the session looks back at the turn and saves the procedure as a personal skill. Claude Code then offers that skill in later sessions whenever a task matches it, and auto-learn lists your learned skills at the start of each session with what each one is for.
 
 Claude can also save skills on its own during a session with the `manage_skill` tool that the plugin adds.
 
@@ -20,7 +20,7 @@ auto-learn needs:
 
 ## How a review works
 
-1. At session start, the plugin tells Claude about `manage_skill` and where skills are saved.
+1. At session start, the plugin tells Claude about `manage_skill` and where skills are saved, and lists the learned skills (see [Skills](#skills)).
 2. When a turn ends, the Stop hook counts the turn's tool calls. The turn is queued for review when it made at least `minToolCalls` tool calls (5 by default), the session has someone at the keyboard (the terminal, an IDE, the desktop app), and the session is not in plan mode. `claude -p`, SDK and background sessions are not reviewed. The hook returns at once and starts a worker; you carry on while the review runs.
 3. The worker waits until the turn is written to the session transcript, then finds its last message. It drops the turn if another Stop hook kept the turn going, if a new prompt arrived first, or if a `/goal` is still being worked on.
 4. The review runs in a fork of the session:
@@ -44,6 +44,8 @@ Skills are saved to `~/.claude/skills/<name>/SKILL.md` (`$CLAUDE_CONFIG_DIR/skil
 - A skill that contains what looks like a credential is refused: private keys, API keys, and GitHub, GitLab, Slack, AWS and Google tokens, and JSON Web Tokens.
 - `create` refuses a name that any skill already uses, in your personal skills or in the project's `.claude/skills`.
 - `update` and `delete` work only on skills that carry the marker, and never through a symbolic link. Skills you wrote, and skills linked in from elsewhere, are never changed.
+
+At the start of each session, and again after each compaction, auto-learn lists the learned skills for Claude with a short description of each: the whole description when it is up to 160 characters, else its first sentence, else its start cut at a word. Claude Code lists every skill too, but once its listing outgrows its budget (1% of the context window by default), it lists some skills by name only, starting with the skills you have used least, and a new learned skill has not been used yet. auto-learn's list puts the most recently changed skills first and stops at 4,000 characters, about 1,000 tokens. It leaves out the skills that `skillOverrides` in your `~/.claude/settings.json` sets to anything other than `on`.
 
 To keep a learned skill as your own, delete its `.auto-learn` file; auto-learn then leaves it alone. To remove a learned skill, delete its folder. To list the learned skills:
 
@@ -104,12 +106,15 @@ The two Opus reviews added about 11% to what their session cost by itself; they 
 
 The `costUsd` field in the [log](#log) is the full cost of a review, side requests included. Claude Code reports it at list price; on a Claude subscription, reviews count toward your plan's usage limits instead.
 
+The learned-skill list adds at most about 1,000 tokens to each session's context.
+
 To spend less, raise `minToolCalls`, or turn `autoCapture` off and leave saving skills to Claude during the session.
 
 ## Privacy
 
 - auto-learn reads the session transcript under `~/.claude/projects` on your machine, to count tool calls and find where the turn ended.
 - auto-learn reads Claude Code's `~/.claude.json` for the cost Claude Code recorded for the session, and logs only that number.
+- auto-learn reads `skillOverrides` in Claude Code's `~/.claude/settings.json`, to leave out the learned skills you hid.
 - A review is a Claude Code request like any turn: the fork sends the session's conversation to Claude again, through your own Claude Code account and settings.
 - The request tells Claude never to save secrets, credentials or personal data in a skill, and `manage_skill` refuses content that looks like a credential.
 - Skills are written only to your skill folder, and the log holds no conversation text.
@@ -123,6 +128,8 @@ The fork is a Claude Code session with your settings, so your other hooks, plugi
 - A review runs in the background after the turn and may still be running when you send the next prompt. Pressing Esc does not stop it; ending the session does, so the review of the turn right before you exit is usually cut short.
 - A session started with `--plugin-dir`, `--mcp-config` or `--append-system-prompt` is forked without those flags. Its fork has `manage_skill` only when auto-learn is installed, and with a changed system prompt the fork's first request misses the prompt cache and costs more.
 - The fork runs the `claude` on `PATH`, which can be a different version from the running session.
+- auto-learn reads skill overrides from your user settings only. A learned skill that project, local or managed settings hide is still in auto-learn's list.
+- Claude Code tells a running session about skills that were added or whose description changed, but not about deleted ones or a changed body. A learned skill deleted during a session stays in that session's skill listing until the session restarts or is compacted.
 - Tested with Claude Code 2.1.322 on Linux only.
 
 ## Uninstall

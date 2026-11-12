@@ -217,6 +217,58 @@ export async function managedSkillVersions(skillsDir) {
 	return versions;
 }
 
+/**
+ * The skills auto-learn created, most recently changed first, each with the
+ * description from its SKILL.md made safe to list, or "" when it has none.
+ *
+ * @returns {Promise<Array<{name: string, description: string}>>}
+ */
+export async function learnedSkills(skillsDir) {
+	const skills = [];
+	for (const name of await skillDirNames(skillsDir)) {
+		const dir = path.join(skillsDir, name);
+		if (!(await isManagedSkillDir(dir))) continue;
+		const skill = await readSkillHead(path.join(dir, "SKILL.md"));
+		if (skill) skills.push({ name, description: frontmatterDescription(skill.head), changedMs: skill.changedMs });
+	}
+	return skills.sort((a, b) => b.changedMs - a.changedMs).map(({ name, description }) => ({ name, description }));
+}
+
+/** The first MAX_SKILL_BYTES of a SKILL.md and when it last changed, or undefined when it is missing. The user may have edited it to any size. */
+async function readSkillHead(file) {
+	let handle;
+	try {
+		handle = await fs.open(file, "r");
+	} catch (error) {
+		if (MISSING.has(error.code)) return undefined;
+		throw error;
+	}
+	try {
+		const buffer = Buffer.alloc(MAX_SKILL_BYTES);
+		const [{ bytesRead }, stats] = await Promise.all([handle.read(buffer, 0, MAX_SKILL_BYTES, 0), handle.stat()]);
+		return { head: buffer.toString("utf8", 0, bytesRead), changedMs: stats.mtimeMs };
+	} finally {
+		await handle.close();
+	}
+}
+
+// shortcut: reads a one-line description, as manage_skill writes it; a multi-line YAML value gives "". Parse YAML if hand-edited skills need it.
+function frontmatterDescription(text) {
+	const frontmatter = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)?.[1] ?? "";
+	const value = /^description:[ \t]*(.*)$/m.exec(frontmatter)?.[1].trim() ?? "";
+	if (/^[|>]/.test(value)) return "";
+	return cleanDescription(value.startsWith('"') ? parseQuoted(value) : value);
+}
+
+function parseQuoted(value) {
+	try {
+		return String(JSON.parse(value));
+	} catch {
+		// A YAML escape or comment that JSON lacks: list the text as written.
+		return value;
+	}
+}
+
 async function skillDirNames(dir) {
 	let entries;
 	try {

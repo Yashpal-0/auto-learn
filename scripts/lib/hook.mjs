@@ -1,11 +1,12 @@
 // What the plugin does at each Claude Code hook event: add the skill guidance
-// at session start, queue a capture after each eligible turn, and forget the
-// session when it ends.
+// and the learned skills at session start, queue a capture after each
+// eligible turn, and forget the session when it ends.
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dataDir, loadOptions, skillsDir } from "./config.mjs";
-import { guidanceText } from "./prompts.mjs";
+import { claudeUserSettingsFile, dataDir, loadOptions, skillsDir } from "./config.mjs";
+import { guidanceText, learnedSkillsText } from "./prompts.mjs";
+import { learnedSkills } from "./skills.mjs";
 import { appendLog, forgetSession, isValidSessionId, queueCapture, readSessionState, writeSessionState } from "./state.mjs";
 import { countToolCalls, readTranscriptRange } from "./transcript.mjs";
 
@@ -42,7 +43,36 @@ async function sessionStart(dir, sessionId, input, env) {
 	if (input.source !== "compact") {
 		await writeSessionState(dir, sessionId, { offset: await transcriptSize(transcriptPathOf(input)), toolCalls: 0 });
 	}
-	return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: guidanceText(skillsDir(env)) } };
+	return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: await sessionContext(env) } };
+}
+
+/**
+ * The guidance, then the learned skills with their descriptions. Claude Code
+ * lists skills by name only once its listing outgrows its budget, starting with
+ * the skills used least, which new learned skills are. Compaction resends that
+ * listing, so this runs for every source.
+ */
+async function sessionContext(env) {
+	const library = skillsDir(env);
+	const hidden = await hiddenSkillNames(env);
+	const skills = (await learnedSkills(library)).filter(({ name }) => !hidden.has(name));
+	return [guidanceText(library), learnedSkillsText(skills)].filter(Boolean).join("\n\n");
+}
+
+/** The skills the user's settings hide from Claude or list by name only: each skillOverrides entry other than "on". */
+// shortcut: reads the user settings only, not project, local, managed or --settings overrides; read those when someone hides learned skills there.
+async function hiddenSkillNames(env) {
+	let settings;
+	try {
+		settings = JSON.parse(await fs.readFile(claudeUserSettingsFile(env), "utf8"));
+	} catch (error) {
+		// Listing a hidden skill does less harm than losing the guidance over a broken settings file.
+		if (error.code === "ENOENT" || error instanceof SyntaxError) return new Set();
+		throw error;
+	}
+	const overrides = settings?.skillOverrides;
+	if (typeof overrides !== "object" || overrides === null) return new Set();
+	return new Set(Object.keys(overrides).filter((name) => overrides[name] !== "on"));
 }
 
 async function stop(dir, sessionId, input, env, spawnWorker) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 - 2026-11-12
+
+- At session start, and again after each compaction, the plugin lists the learned skills for Claude with a short description of each, newest first, up to 4,000 characters. Claude Code lists skills by name only once its listing outgrows its budget, starting with the skills used least, so new learned skills were the first to lose their descriptions. Skills that `skillOverrides` in the user settings hides are left out.
+
 ## 0.1.1 - 2026-11-12
 
 - The log's `costUsd` is now what a review itself cost. Claude Code counts a resumed session's earlier cost into the total it reports for the review's fork; auto-learn now reads that cost from `~/.claude.json`, subtracts it, and logs it as `sessionCostUsd`. Entries logged by 0.1.0 overstate `costUsd` for resumed sessions.

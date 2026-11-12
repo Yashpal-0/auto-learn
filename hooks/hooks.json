@@ -1,5 +1,5 @@
 {
-  "description": "Adds the skill guidance at session start and, after each eligible turn, starts a background skill review in a fork of the session.",
+  "description": "Adds the skill guidance and the learned skills at session start and, after each eligible turn, starts a background skill review in a fork of the session.",
   "hooks": {
     "SessionStart": [
       {

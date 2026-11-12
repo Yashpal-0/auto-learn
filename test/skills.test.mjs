@@ -7,6 +7,7 @@ import {
 	MAX_DESCRIPTION_CHARS,
 	MAX_SKILL_BYTES,
 	cleanDescription,
+	learnedSkills,
 	manageSkill,
 	managedSkillVersions,
 } from "../scripts/lib/skills.mjs";
@@ -239,4 +240,40 @@ test("managedSkillVersions changes when a managed skill is written", async (t) =
 	assert.deepEqual([...before.keys()], ["one"]);
 	await manageSkill({ action: "update", name: "one", description: "d", body: "changed body" }, context);
 	assert.notEqual((await managedSkillVersions(context.skillsDir)).get("one"), before.get("one"));
+});
+
+test("learnedSkills lists only the skills auto-learn created, newest first, with their descriptions", async (t) => {
+	const { root, context } = await library(t);
+	await create(context, "alpha-skill", { description: "Use when the older thing breaks" });
+	await create(context, "beta-skill", { description: 'Use when the "newer" thing breaks' });
+	await fs.utimes(path.join(context.skillsDir, "alpha-skill", "SKILL.md"), new Date("2026-01-01"), new Date("2026-01-01"));
+	await fs.utimes(path.join(context.skillsDir, "beta-skill", "SKILL.md"), new Date("2026-02-01"), new Date("2026-02-01"));
+	await authoredSkill(context.skillsDir, "my-own-skill");
+	const elsewhere = path.join(root, "elsewhere");
+	await create({ ...context, skillsDir: elsewhere }, "linked-skill");
+	await fs.symlink(path.join(elsewhere, "linked-skill"), path.join(context.skillsDir, "linked-skill"));
+	assert.deepEqual(await learnedSkills(context.skillsDir), [
+		{ name: "beta-skill", description: 'Use when the "newer" thing breaks' },
+		{ name: "alpha-skill", description: "Use when the older thing breaks" },
+	]);
+});
+
+test("learnedSkills reads a description edited by hand on one line, cleaned, and none from a block value", async (t) => {
+	const { context } = await library(t);
+	await create(context, "plain-skill");
+	await create(context, "block-skill");
+	const write = (name, frontmatter) =>
+		fs.writeFile(path.join(context.skillsDir, name, "SKILL.md"), `---\nname: ${name}\n${frontmatter}\n---\n\nBody.\n`);
+	await write("plain-skill", "description: Run the <docs> build");
+	await write("block-skill", "description: |\n  Literal text");
+	const described = Object.fromEntries((await learnedSkills(context.skillsDir)).map(({ name, description }) => [name, description]));
+	assert.deepEqual(described, { "block-skill": "", "plain-skill": "Run the docs build" });
+});
+
+test("learnedSkills skips a marked folder without a SKILL.md, and finds nothing in a missing library", async (t) => {
+	const { context } = await library(t);
+	assert.deepEqual(await learnedSkills(context.skillsDir), []);
+	await create(context, "gone-skill");
+	await fs.rm(path.join(context.skillsDir, "gone-skill", "SKILL.md"));
+	assert.deepEqual(await learnedSkills(context.skillsDir), []);
 });

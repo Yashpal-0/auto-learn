@@ -42,6 +42,11 @@ export function skillsDir(env = process.env) {
 	return path.resolve(env.AUTO_LEARN_SKILLS_DIR || path.join(claudeConfigDir(env), "skills"));
 }
 
+/** Claude Code's user settings, settings.json in its configuration folder. */
+export function claudeUserSettingsFile(env = process.env) {
+	return path.join(claudeConfigDir(env), "settings.json");
+}
+
 /** Plugin state: the capture queue, locks, turn offsets and the activity log. */
 export function dataDir(env = process.env) {
 	return path.resolve(env.CLAUDE_PLUGIN_DATA || path.join(claudeConfigDir(env), "auto-learn"));

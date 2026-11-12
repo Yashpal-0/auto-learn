@@ -1,7 +1,12 @@
-// The texts the plugin gives to Claude: the session guidance, the
-// manage_skill description, and the request a capture fork receives.
+// The texts the plugin gives to Claude: the session guidance with the learned
+// skills, the manage_skill description, and the request a capture fork receives.
 import { readFileSync } from "node:fs";
 import { displayPath } from "./config.mjs";
+
+/** The most the learned-skill listing adds to a session's context, about 1,000 tokens. */
+const MAX_LISTING_CHARS = 4000;
+const PREVIEW_CHARS = 160;
+const MIN_SENTENCE_CHARS = 40;
 
 function template(name) {
 	return readFileSync(new URL(`../../prompts/${name}.md`, import.meta.url), "utf8");
@@ -18,6 +23,38 @@ export function fill(text, values) {
 /** Standing guidance for every session, added at session start. */
 export function guidanceText(skillsDir) {
 	return fill(template("guidance"), { skillsDir: displayPath(skillsDir) }).trim();
+}
+
+/**
+ * The learned skills, each with a short description, or "" when there are
+ * none. `skills` come newest first; the ones past the size limit are counted
+ * instead of listed.
+ *
+ * @param {Array<{name: string, description: string}>} skills
+ */
+export function learnedSkillsText(skills) {
+	if (skills.length === 0) return "";
+	const lines = [];
+	let size = 0;
+	for (const { name, description } of skills) {
+		const line = description ? `- ${name}: ${preview(description)}` : `- ${name}`;
+		size += line.length + 1;
+		if (size > MAX_LISTING_CHARS + 1) break;
+		lines.push(line);
+	}
+	const omitted = skills.length - lines.length;
+	if (omitted > 0) lines.push(`- ${omitted} older learned ${omitted === 1 ? "skill is" : "skills are"} not listed here.`);
+	return fill(template("learned-skills"), { skills: lines.join("\n") }).trim();
+}
+
+/** The description whole when it is short, else its first sentence, else cut at a word. */
+function preview(description) {
+	if (description.length <= PREVIEW_CHARS) return description;
+	const sentence = /^.+?[.!?](?=\s)/.exec(description)?.[0] ?? "";
+	if (sentence.length >= MIN_SENTENCE_CHARS && sentence.length <= PREVIEW_CHARS) return sentence;
+	const cut = description.slice(0, PREVIEW_CHARS - 1);
+	const wordEnd = cut.lastIndexOf(" ");
+	return `${wordEnd > 0 ? cut.slice(0, wordEnd) : cut}…`;
 }
 
 export function manageSkillDescription(skillsDir) {
