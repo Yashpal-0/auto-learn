@@ -36,7 +36,7 @@ const SECRET_PATTERNS = [
  * call throws an Error whose message says what to change.
  *
  * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown}} args
- * @param {{skillsDir: string, projectDir?: string}} context
+ * @param {{skillsDir: string, projectDir?: string, host?: "claude" | "codex"}} context
  */
 export async function manageSkill(args, context) {
 	const { action, name: rawName, description, body } = args ?? {};
@@ -172,9 +172,10 @@ async function isManagedSkillDir(dir) {
 }
 
 /** The project's skills directory, or undefined when there is none or it is the personal library itself. */
-async function projectSkillsDir({ skillsDir, projectDir }) {
+// shortcut: for Codex, checks the project's own .agents/skills only, while Codex also reads those of the folders up to the repository root; walk them when a learned skill shadows one there.
+async function projectSkillsDir({ skillsDir, projectDir, host }) {
 	if (!projectDir) return undefined;
-	const dir = path.join(projectDir, ".claude", "skills");
+	const dir = path.join(projectDir, host === "codex" ? ".agents" : ".claude", "skills");
 	const [project, personal] = await Promise.all([canonicalPath(dir), canonicalPath(skillsDir)]);
 	return project === personal ? undefined : dir;
 }

@@ -59,3 +59,33 @@ export function turnWithToolCalls(count, prompt = "Set up the dev database") {
 export function toJsonl(entries) {
 	return entries.map((value) => `${JSON.stringify(value)}\n`).join("");
 }
+
+/** Records shaped like the lines of a Codex session rollout, as Codex 0.168 writes them. */
+export const rollout = {
+	meta: (source = "cli", extra = {}) => ({
+		type: "session_meta",
+		payload: { id: "s1", source, model_provider: "openai", cwd: "/work/project", cli_version: "0.168.0", ...extra },
+	}),
+	started: (turnId) => ({ type: "event_msg", payload: { type: "task_started", turn_id: turnId, collaboration_mode_kind: "default" } }),
+	context: (turnId, { model = "gpt-test", effort = "high", mode = "default" } = {}) => ({
+		type: "turn_context",
+		payload: { turn_id: turnId, cwd: "/work/project", model, effort, collaboration_mode: { mode, settings: { model } } },
+	}),
+	item: (turnId, type, id) => ({ type: "event_msg", payload: { type: "item_completed", thread_id: "s1", turn_id: turnId, item: { type, id } } }),
+	call: (turnId, callId) => ({
+		type: "response_item",
+		payload: { type: "function_call", name: "exec", call_id: callId, internal_chat_message_metadata_passthrough: { turn_id: turnId } },
+	}),
+	complete: (turnId) => ({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } }),
+	aborted: (turnId) => ({ type: "event_msg", payload: { type: "turn_aborted", turn_id: turnId, reason: "interrupted" } }),
+};
+
+/** One Codex turn up to its Stop hook: its start, `count` commands each run through one exec call, and the reply. */
+export function codexTurn(turnId, count, settings) {
+	const records = [rollout.started(turnId), rollout.context(turnId, settings), rollout.item(turnId, "UserMessage", `${turnId}-prompt`)];
+	for (let i = 1; i <= count; i++) {
+		records.push(rollout.call(turnId, `${turnId}-call-${i}`), rollout.item(turnId, "CommandExecution", `${turnId}-command-${i}`));
+	}
+	records.push(rollout.item(turnId, "AgentMessage", `${turnId}-reply`));
+	return records;
+}

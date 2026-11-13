@@ -33,13 +33,29 @@ function parseCount(raw) {
 	return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+/**
+ * The agent a hook or the MCP server runs for, from its command-line
+ * arguments: none for Claude Code, `--host=codex` for Codex.
+ *
+ * @returns {"claude" | "codex"}
+ */
+export function parseHost(args) {
+	if (args.length === 0) return "claude";
+	if (args.length === 1 && args[0] === "--host=codex") return "codex";
+	throw new Error(`Unknown arguments ${JSON.stringify(args)}: expected nothing or --host=codex.`);
+}
+
 function claudeConfigDir(env) {
 	return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 }
 
-/** The personal skills directory Claude Code discovers, which holds the managed skills. */
-export function skillsDir(env = process.env) {
-	return path.resolve(env.AUTO_LEARN_SKILLS_DIR || path.join(claudeConfigDir(env), "skills"));
+/**
+ * The personal skills directory the agent discovers, which holds the managed
+ * skills: ~/.claude/skills for Claude Code, ~/.agents/skills for Codex.
+ */
+export function skillsDir(env = process.env, host = "claude") {
+	if (env.AUTO_LEARN_SKILLS_DIR) return path.resolve(env.AUTO_LEARN_SKILLS_DIR);
+	return path.resolve(host === "codex" ? path.join(os.homedir(), ".agents", "skills") : path.join(claudeConfigDir(env), "skills"));
 }
 
 /** Claude Code's user settings, settings.json in its configuration folder. */

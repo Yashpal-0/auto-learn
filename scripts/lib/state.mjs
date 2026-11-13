@@ -91,9 +91,10 @@ export async function forgetSession(dataDir, sessionId) {
 
 /**
  * Queues a capture of the turn that ended when the transcript was `job.end`
- * bytes long. Captures run in the order their turns ended.
+ * bytes long. Captures run in the order their turns ended. A Codex job names
+ * its turn by id instead of by where it starts.
  *
- * @param {{sessionId: string, transcriptPath: string, start: number, end: number, projectDir?: string, effort?: string}} job
+ * @param {{host?: "codex", sessionId: string, transcriptPath: string, start?: number, end: number, turnId?: string, projectDir?: string, model?: string, modelProvider?: string, effort?: string}} job
  */
 export async function queueCapture(dataDir, job) {
 	if (!Number.isSafeInteger(job.end) || job.end < 0) throw new Error(`Refusing to queue a capture at transcript offset ${job.end}.`);

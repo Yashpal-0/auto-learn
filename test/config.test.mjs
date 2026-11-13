@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { claudeGlobalConfigFile, dataDir, displayPath, loadOptions, skillsDir } from "../scripts/lib/config.mjs";
+import { claudeGlobalConfigFile, dataDir, displayPath, loadOptions, parseHost, skillsDir } from "../scripts/lib/config.mjs";
 
 test("options fall back to the manifest defaults", () => {
 	assert.deepEqual(loadOptions({}), { autoCapture: true, minToolCalls: 5 });
@@ -26,6 +26,19 @@ test("the skill library follows CLAUDE_CONFIG_DIR unless AUTO_LEARN_SKILLS_DIR n
 	assert.equal(skillsDir({}), path.join(os.homedir(), ".claude", "skills"));
 	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg" }), path.resolve("/cfg/skills"));
 	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg", AUTO_LEARN_SKILLS_DIR: "/elsewhere" }), path.resolve("/elsewhere"));
+});
+
+test("Codex's skill library is ~/.agents/skills, which Codex discovers, unless AUTO_LEARN_SKILLS_DIR names one", () => {
+	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg" }, "codex"), path.join(os.homedir(), ".agents", "skills"));
+	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "codex"), path.resolve("/elsewhere"));
+});
+
+test("the host is Claude Code without arguments and Codex with --host=codex; anything else is refused", () => {
+	assert.equal(parseHost([]), "claude");
+	assert.equal(parseHost(["--host=codex"]), "codex");
+	for (const args of [["--host=claude"], ["--host", "codex"], ["--host=codex", "extra"], ["codex"]]) {
+		assert.throws(() => parseHost(args), /Unknown arguments/, JSON.stringify(args));
+	}
 });
 
 test("plugin state lives in CLAUDE_PLUGIN_DATA", () => {

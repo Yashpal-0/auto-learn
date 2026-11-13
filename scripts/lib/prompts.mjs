@@ -1,5 +1,6 @@
-// The texts the plugin gives to Claude: the session guidance with the learned
-// skills, the manage_skill description, and the request a capture fork receives.
+// The texts the plugin gives to the model: the session guidance with the
+// learned skills, the manage_skill description, and the request a capture fork
+// receives. Codex gets its own wording, from prompts/codex.
 import { readFileSync } from "node:fs";
 import { displayPath } from "./config.mjs";
 
@@ -8,8 +9,10 @@ const MAX_LISTING_CHARS = 4000;
 const PREVIEW_CHARS = 160;
 const MIN_SENTENCE_CHARS = 40;
 
-function template(name) {
-	return readFileSync(new URL(`../../prompts/${name}.md`, import.meta.url), "utf8");
+/** @param {"claude" | "codex"} host */
+function template(name, host) {
+	const folder = host === "codex" ? "codex/" : "";
+	return readFileSync(new URL(`../../prompts/${folder}${name}.md`, import.meta.url), "utf8");
 }
 
 /** Replaces each {{key}} in `text` with its value, in one pass, so values are never expanded again. */
@@ -21,8 +24,8 @@ export function fill(text, values) {
 }
 
 /** Standing guidance for every session, added at session start. */
-export function guidanceText(skillsDir) {
-	return fill(template("guidance"), { skillsDir: displayPath(skillsDir) }).trim();
+export function guidanceText(skillsDir, host = "claude") {
+	return fill(template("guidance", host), { skillsDir: displayPath(skillsDir) }).trim();
 }
 
 /**
@@ -32,7 +35,7 @@ export function guidanceText(skillsDir) {
  *
  * @param {Array<{name: string, description: string}>} skills
  */
-export function learnedSkillsText(skills) {
+export function learnedSkillsText(skills, host = "claude") {
 	if (skills.length === 0) return "";
 	const lines = [];
 	let size = 0;
@@ -44,7 +47,7 @@ export function learnedSkillsText(skills) {
 	}
 	const omitted = skills.length - lines.length;
 	if (omitted > 0) lines.push(`- ${omitted} older learned ${omitted === 1 ? "skill is" : "skills are"} not listed here.`);
-	return fill(template("learned-skills"), { skills: lines.join("\n") }).trim();
+	return fill(template("learned-skills", host), { skills: lines.join("\n") }).trim();
 }
 
 /** The description whole when it is short, else its first sentence, else cut at a word. */
@@ -57,11 +60,11 @@ function preview(description) {
 	return `${wordEnd > 0 ? cut.slice(0, wordEnd) : cut}…`;
 }
 
-export function manageSkillDescription(skillsDir) {
-	return fill(template("manage-skill"), { skillsDir: displayPath(skillsDir) }).trim();
+export function manageSkillDescription(skillsDir, host = "claude") {
+	return fill(template("manage-skill", host), { skillsDir: displayPath(skillsDir) }).trim();
 }
 
 /** The prompt a capture fork gets after the turn it reviews. */
-export function captureNudge(toolName) {
-	return fill(template("capture"), { tool: toolName }).trim();
+export function captureNudge(toolName, host = "claude") {
+	return fill(template("capture", host), { tool: toolName }).trim();
 }

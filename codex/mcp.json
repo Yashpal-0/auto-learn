@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "auto-learn": {
+      "command": "node",
+      "args": ["./scripts/mcp-server.mjs", "--host=codex"],
+      "cwd": ".",
+      "env_vars": ["AUTO_LEARN_SKILLS_DIR"]
+    }
+  }
+}

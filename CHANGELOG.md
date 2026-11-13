@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 - 2026-11-13
+
+- auto-learn now runs in Codex. Install it with `codex plugin marketplace add Yashpal-0/auto-learn` and `codex plugin add auto-learn@auto-learn`, then trust its hooks with `/hooks`. After an eligible turn, a background fork of the session made with `codex app-server` reviews the turn and saves what it worked out as a skill in `~/.agents/skills`, the folder Codex reads personal skills from. The fork runs with the approval policy `never` and a read-only sandbox, and approves `manage_skill` alone. The README's Codex section has the details.
+- Claude Code behaves as before. Codex reads its own manifest, hooks and MCP configuration from `.codex-plugin/` and `codex/`, and keeps its skills and log apart from Claude Code's.
+
 ## 0.1.2 - 2026-11-12
 
 - At session start, and again after each compaction, the plugin lists the learned skills for Claude with a short description of each, newest first, up to 4,000 characters. Claude Code lists skills by name only once its listing outgrows its budget, starting with the skills used least, so new learned skills were the first to lose their descriptions. Skills that `skillOverrides` in the user settings hides are left out.

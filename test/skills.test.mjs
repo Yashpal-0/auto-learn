@@ -94,6 +94,15 @@ test("create refuses a name a project skill uses", async (t) => {
 	await assert.rejects(fs.access(path.join(context.skillsDir, "deploy-docs")));
 });
 
+test("for Codex, create refuses a name a project skill in .agents/skills uses, and not one in .claude/skills", async (t) => {
+	const { context } = await library(t);
+	const codex = { ...context, host: "codex" };
+	await authoredSkill(path.join(context.projectDir, ".claude", "skills"), "claude-only");
+	await authoredSkill(path.join(context.projectDir, ".agents", "skills"), "deploy-docs");
+	await assert.rejects(create(codex, "deploy-docs"), /another name/);
+	assert.match(await create(codex, "claude-only"), /^Created skill/);
+});
+
 test("create and update require a description and a body", async (t) => {
 	const { context } = await library(t);
 	await assert.rejects(manageSkill({ action: "create", name: "a", body: "b" }, context), /description and body/);

@@ -1,13 +1,22 @@
 #!/usr/bin/env node
-// The auto-learn MCP server: newline-delimited JSON-RPC 2.0 on stdin and stdout.
+// The auto-learn MCP server: newline-delimited JSON-RPC 2.0 on stdin and
+// stdout. `mcp-server.mjs` serves Claude Code, `mcp-server.mjs --host=codex` Codex.
 import readline from "node:readline";
-import { skillsDir } from "./lib/config.mjs";
+import { parseHost, skillsDir } from "./lib/config.mjs";
 import { createMcpServer } from "./lib/mcp.mjs";
 
-const handle = createMcpServer({
-	skillsDir: skillsDir(),
-	projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-});
+let host;
+try {
+	host = parseHost(process.argv.slice(2));
+} catch (error) {
+	process.stderr.write(`auto-learn: ${error.message}\n`);
+	process.exit(1);
+}
+// Codex starts the server in the plugin's folder and names each call's project in the call itself.
+const handle =
+	host === "codex"
+		? createMcpServer({ skillsDir: skillsDir(process.env, host), host })
+		: createMcpServer({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
 
 function write(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);

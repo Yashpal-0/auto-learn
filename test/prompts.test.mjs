@@ -26,6 +26,20 @@ test("the capture request says it is automatic and how to load manage_skill", ()
 	assert.doesNotMatch(nudge, /\{\{/);
 });
 
+test("Codex gets its own wording: its skill library, its name, and tool_search to load manage_skill", () => {
+	const library = path.join(os.homedir(), ".agents", "skills");
+	const texts = [guidanceText(library, "codex"), manageSkillDescription(library, "codex"), learnedSkillsText([{ name: "a", description: "b" }], "codex")];
+	for (const text of texts) {
+		assert.doesNotMatch(text, /Claude|\{\{/, text);
+	}
+	for (const text of texts.slice(0, 2)) assert.ok(text.includes(path.join("~", ".agents", "skills")), text);
+	assert.match(texts[0], /Codex offers/);
+	const nudge = captureNudge("manage_skill", "codex");
+	assert.match(nudge, /^Automatic skill review/);
+	assert.match(nudge, /`tool_search`, query `manage_skill`/);
+	assert.doesNotMatch(nudge, /Claude|select:|\{\{/);
+});
+
 test("the learned-skill listing gives each skill a short description", () => {
 	assert.equal(learnedSkillsText([]), "");
 	const sentence = "Use when the docs build fails on a missing theme package.";

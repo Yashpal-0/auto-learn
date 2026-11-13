@@ -4,6 +4,8 @@ auto-learn lets Claude Code learn skills from your own work. After a turn in whi
 
 Claude can also save skills on its own during a session with the `manage_skill` tool that the plugin adds.
 
+auto-learn works in Codex too, with a skill library of its own: see [Codex](#codex).
+
 ## Install
 
 ```sh
@@ -141,6 +143,97 @@ claude plugin marketplace remove auto-learn
 
 Learned skills stay in your skill folder. List them with the `find` command under [Skills](#skills).
 
+## Codex
+
+auto-learn also runs in Codex, in the terminal and in the IDE extension. It works as it does in Claude Code, with one difference that matters: Codex skills go to their own folder, `~/.agents/skills`, so neither agent changes the other's skills.
+
+### Install in Codex
+
+```sh
+codex plugin marketplace add Yashpal-0/auto-learn
+codex plugin add auto-learn@auto-learn
+```
+
+Then start a Codex session, open `/hooks`, and trust auto-learn's three hooks. Codex runs a plugin's hooks only once you trust them, and a hook that an update changes needs your trust again.
+
+auto-learn needs:
+
+- Node.js 18 or later on `PATH`.
+- The `codex` command on `PATH`. Each review runs `codex app-server` in the background.
+
+Codex runs hooks through a login shell (`$SHELL -lc`) with the environment it started with, so that environment and your shell profile decide the `PATH`.
+
+### How a review works in Codex
+
+1. At session start, the plugin tells Codex about `manage_skill` and lists the learned skills.
+2. When a turn ends, the Stop hook reads the turn from the session's rollout file under `~/.codex/sessions` and counts its tool calls: commands, file changes, MCP and dynamic tool calls, subagent calls, web searches, and image views and generations. The turn is queued for review when it made at least `minToolCalls` tool calls, the session runs in the terminal or the IDE extension, and the turn did not run in plan mode. `codex exec`, MCP client and subagent sessions are not reviewed, and neither are ephemeral sessions, which keep no rollout.
+3. The worker waits until the rollout records the end of the turn. It drops the turn if the turn was interrupted, if a new turn started first, or if the turn did not end within 10 minutes. A turn that another Stop hook kept going is reviewed once.
+4. The review runs in a fork of the session. The worker starts `codex app-server` in the session's project folder, forks the session after the reviewed turn into an ephemeral thread with the session's model, reasoning effort and model provider, and starts one turn on the fork with the review request. The fork is not saved as a session and does not appear in `codex resume`.
+5. The fork runs with the approval policy `never` and a read-only sandbox, so it never prompts, and its commands cannot change files. Its configuration approves `manage_skill`, which saves skills from outside the sandbox, and every other request for approval is denied. Hooks and the `notify` program are off in the fork; your plugins and MCP servers load as in any session.
+6. A review stops after 5 minutes. Reviews of one session run one at a time, oldest first. Ending the session stops its running and queued reviews.
+
+### Skills in Codex
+
+Skills are saved to `~/.agents/skills/<name>/SKILL.md`, the folder Codex reads personal skills from, under the same rules as in Claude Code (see [Skills](#skills)). `create` refuses a name that a personal skill or a skill in the project's `.agents/skills` already uses. To list the learned skills:
+
+```sh
+find ~/.agents/skills -maxdepth 2 -name .auto-learn
+```
+
+Unless your approval settings say otherwise, Codex asks before each `manage_skill` call in your sessions, as it does for any MCP tool not marked read-only. To let Codex save skills without asking, choose to always allow the tool when Codex asks, or add this to `~/.codex/config.toml`:
+
+```toml
+[plugins."auto-learn@auto-learn".mcp_servers.auto-learn.tools.manage_skill]
+approval_mode = "approve"
+```
+
+### Options in Codex
+
+Codex has no plugin settings, so set the [options](#options) as the environment variables that Claude Code sets from its saved options: `CLAUDE_PLUGIN_OPTION_AUTOCAPTURE` (`true` or `false`) and `CLAUDE_PLUGIN_OPTION_MINTOOLCALLS` (a whole number). Hooks read them from the environment Codex started with:
+
+```sh
+CLAUDE_PLUGIN_OPTION_MINTOOLCALLS=8 codex
+```
+
+If you export them from your shell profile instead, Claude Code's hooks can see them too. `AUTO_LEARN_SKILLS_DIR` replaces `~/.agents/skills` in Codex, for testing.
+
+### Log in Codex
+
+The log is `auto-learn.log` in `~/.codex/plugins/data/auto-learn-auto-learn/` (under `$CODEX_HOME` when that is set), with the same events as in Claude Code. A Codex `capture` entry holds the review's outcome and duration, its `manage_skill` calls (`skillCalls`), its other tool calls (`otherToolCalls`), its tokens (`inputTokens`, `cacheReadTokens`, `outputTokens`) and the skills it created, updated or deleted. It holds no cost, because Codex reports none.
+
+```sh
+tail -n 5 ~/.codex/plugins/data/auto-learn-auto-learn/auto-learn.log
+```
+
+### Cost in Codex
+
+Not yet measured. A review is one more turn with the session's model and reasoning effort, sent through your Codex sign-in: on a ChatGPT plan it counts toward the plan's usage limits, and with an API key it is billed. The fork starts with the same configuration and tools as the session so that its request can reuse the prompt cache the session has just written; whether it does is not yet measured either. The log's `cacheReadTokens` shows how much of a review's input came from the cache. To spend less, raise `minToolCalls`, or turn `autoCapture` off.
+
+### Privacy in Codex
+
+- auto-learn reads the session's rollout file under `~/.codex/sessions` on your machine, to count tool calls and find where the turn ended.
+- A review is a Codex turn like any other: the fork sends the session's conversation to the model again, through your own Codex sign-in and configuration.
+- As in Claude Code, the request tells the model never to save secrets, credentials or personal data in a skill, `manage_skill` refuses content that looks like a credential, and the log holds no conversation text.
+
+### Limitations in Codex
+
+- A review may still be running when you send the next prompt. Pressing Esc does not stop it; ending the session does.
+- The fork runs the `codex` on `PATH`, which can be a different version from the Codex running the session; an IDE extension may bundle its own. Without `codex` on `PATH`, reviews fail and the log says why.
+- The fork reads your configuration from disk. Settings you gave the session on the command line, such as `-c` overrides, do not reach it; the session's model, reasoning effort and model provider do.
+- The read-only sandbox still lets read-only tools and commands run in the fork, as well as tools you always allow. The request tells Codex to use only `manage_skill`, and the log counts any other tool calls as `otherToolCalls`.
+- A learned skill that `[[skills.config]]` in your Codex configuration disables is still in auto-learn's list.
+- `create` checks the project's own `.agents/skills`, but not those of the folders above it up to the repository root, which Codex also reads.
+- Tested with Codex 0.168.0 on Linux only.
+
+### Uninstall from Codex
+
+```sh
+codex plugin remove auto-learn@auto-learn
+codex plugin marketplace remove auto-learn
+```
+
+Learned skills stay in `~/.agents/skills`. If `~/.codex/plugins/data/auto-learn-auto-learn` is still there afterwards, delete it to remove the log.
+
 ## Development
 
 The plugin has no dependencies. Run the tests with:
@@ -154,6 +247,13 @@ node --test test/*.test.mjs
 ```sh
 claude plugin marketplace add ./
 claude plugin install auto-learn@auto-learn
+```
+
+In Codex, install a checkout the same way. Codex copies the plugin when you add it, so remove it and add it again after a change:
+
+```sh
+codex plugin marketplace add ./
+codex plugin add auto-learn@auto-learn
 ```
 
 ## License

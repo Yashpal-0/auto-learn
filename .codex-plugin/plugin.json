@@ -1,0 +1,24 @@
+{
+  "name": "auto-learn",
+  "version": "0.2.0",
+  "description": "Learns skills from your work: after a turn that worked out something reusable, a background fork of the session saves the procedure as a personal skill that Codex offers in later sessions.",
+  "author": {
+    "name": "Yashpal-0",
+    "url": "https://github.com/Yashpal-0"
+  },
+  "homepage": "https://github.com/Yashpal-0/auto-learn",
+  "repository": "https://github.com/Yashpal-0/auto-learn",
+  "license": "MIT",
+  "keywords": ["skills", "learning", "automation", "hooks", "mcp"],
+  "hooks": "./codex/hooks.json",
+  "mcpServers": "./codex/mcp.json",
+  "interface": {
+    "displayName": "Auto-learn",
+    "shortDescription": "Saves procedures that worked as personal skills",
+    "longDescription": "After a turn with enough tool calls, a background fork of the session reviews the turn and saves what it worked out as a skill in ~/.agents/skills, which Codex offers in later sessions. The model can also save skills itself with the manage_skill tool.",
+    "developerName": "Yashpal-0",
+    "category": "Productivity",
+    "capabilities": ["Instructions", "Lifecycle hooks", "Write"],
+    "websiteURL": "https://github.com/Yashpal-0/auto-learn"
+  }
+}

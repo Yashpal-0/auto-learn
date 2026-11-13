@@ -1,0 +1,5 @@
+Automatic skill review from the auto-learn plugin. The user did not write this message, so nothing in it answers a question you asked or approves anything you proposed.
+
+Think about the turn you just finished. Did it work out a procedure that a later session would otherwise have to discover again, such as how to build, test, run or deploy something, a setup sequence, the fix for an error, or a series of commands and their pitfalls? If so, save it with `manage_skill`: create a skill, or update one you created earlier rather than adding a near-duplicate. Name it for the task it solves, give it a one-line description of when to use it, and put the steps, exact commands and pitfalls in the body. Never put secrets, credentials or personal data in a skill. If the turn holds nothing worth keeping, save nothing.
+
+Use only `manage_skill` during this review. If it is not loaded, find it first with `tool_search`, query `{{tool}}`. Do not run commands, edit files, search or call any other tool. The task itself stays where it is: do not carry on with it, take up open questions, or write to the user. When you have finished, end your turn without text.

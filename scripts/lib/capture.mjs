@@ -130,7 +130,7 @@ function isSafeArgument(value) {
 	return typeof value === "string" && value !== "" && value.length <= MAX_ARGUMENT_CHARS && !value.startsWith("-");
 }
 
-async function isDirectory(target) {
+export async function isDirectory(target) {
 	try {
 		return (await fs.stat(target)).isDirectory();
 	} catch (error) {
@@ -139,7 +139,8 @@ async function isDirectory(target) {
 	}
 }
 
-function changedSkills(before, after) {
+/** The managed skills created, updated and deleted between two managedSkillVersions readings. */
+export function changedSkills(before, after) {
 	const created = [];
 	const updated = [];
 	for (const [name, version] of after) {
@@ -219,7 +220,8 @@ export async function runFork({ sessionId, forkAt, model, effort, cwd, env, sign
 	});
 }
 
-function forkEnvironment(env) {
+/** The environment for a capture fork: the session's, less what the agent tells hooks about the session that ran them. */
+export function forkEnvironment(env) {
 	const result = {};
 	for (const [key, value] of Object.entries(env)) {
 		if (!PARENT_SESSION_VARIABLES.has(key) && !key.startsWith("CLAUDE_PLUGIN_OPTION_")) result[key] = value;
@@ -228,7 +230,7 @@ function forkEnvironment(env) {
 }
 
 /** Collects up to `limit` bytes of a stream and returns a function that reads them as text. */
-function boundedSink(stream, limit) {
+export function boundedSink(stream, limit) {
 	const chunks = [];
 	let size = 0;
 	stream.on("data", (chunk) => {

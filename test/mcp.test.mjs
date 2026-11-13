@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { createMcpServer } from "../scripts/lib/mcp.mjs";
 import { tempDir } from "./helpers.mjs";
 
@@ -67,6 +68,66 @@ test("unknown tools, unknown methods and malformed requests are JSON-RPC errors"
 	assert.equal((await handle({ jsonrpc: "2.0", id: 2, method: "resources/list" })).error.code, -32601);
 	assert.equal((await handle({ id: 3, method: "ping" })).error.code, -32600);
 	assert.equal((await handle([{ jsonrpc: "2.0", id: 4, method: "ping" }])).error.code, -32600);
+});
+
+/** A server for Codex, which names each call's project in the call's sandbox state. */
+async function codexServer(t) {
+	const root = await tempDir(t);
+	const skillsDir = path.join(root, "skills");
+	const projectDir = path.join(root, "project");
+	return { root, skillsDir, projectDir, handle: createMcpServer({ skillsDir, host: "codex" }) };
+}
+
+const withSandbox = (message, sandboxCwd) => ({ ...message, params: { ...message.params, _meta: { "codex/sandbox-state": { sandboxCwd } } } });
+
+test("the Codex server asks for each call's sandbox state and describes the tool for Codex", async (t) => {
+	const { handle } = await codexServer(t);
+	const init = await handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+	assert.deepEqual(init.result.capabilities, { tools: {}, experimental: { "codex/sandbox-state": {} } });
+	const [tool] = (await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" })).result.tools;
+	assert.match(tool.description, /Codex offers/);
+	assert.match(tool.inputSchema.properties.description.description, /Codex matches tasks against it/);
+	assert.doesNotMatch(JSON.stringify(tool), /Claude/);
+});
+
+test("the Codex server checks the project of the call's sandbox for a clashing skill", async (t) => {
+	const { handle, skillsDir, projectDir } = await codexServer(t);
+	const projectSkill = path.join(projectDir, ".agents", "skills", "deploy-docs");
+	await fs.mkdir(projectSkill, { recursive: true });
+	await fs.writeFile(path.join(projectSkill, "SKILL.md"), "---\nname: deploy-docs\ndescription: Mine\n---\n\nHands off.\n");
+
+	for (const sandboxCwd of [pathToFileURL(projectDir).href, projectDir]) {
+		const refused = await handle(withSandbox(call(1, createArgs), sandboxCwd));
+		assert.equal(refused.result.isError, true, sandboxCwd);
+		assert.match(refused.result.content[0].text, /another name/);
+	}
+	// Without a usable sandbox directory there is no project to check.
+	for (const sandboxCwd of ["relative/project", "file://remote-host/project", 7]) {
+		await fs.rm(path.join(skillsDir, "deploy-docs"), { recursive: true, force: true });
+		const created = await handle(withSandbox(call(2, createArgs), sandboxCwd));
+		assert.equal(created.result.isError, undefined, String(sandboxCwd));
+	}
+});
+
+test("the server script serves Codex with --host=codex and refuses other arguments", async (t) => {
+	const root = await tempDir(t);
+	const env = { ...process.env, AUTO_LEARN_SKILLS_DIR: path.join(root, "skills") };
+	const child = spawn(process.execPath, [SERVER_SCRIPT, "--host=codex"], { env, stdio: ["pipe", "pipe", "inherit"] });
+	// A failed assertion skips closing stdin, and the running server would keep the test from ending.
+	t.after(() => child.kill());
+	const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+	child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })}\n`);
+	const init = JSON.parse((await replies.next()).value);
+	assert.deepEqual(init.result.capabilities.experimental, { "codex/sandbox-state": {} });
+	child.stdin.end();
+
+	const refused = spawn(process.execPath, [SERVER_SCRIPT, "--host=other"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	let stderr = "";
+	refused.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	assert.equal(await new Promise((resolve) => refused.once("close", resolve)), 1);
+	assert.match(stderr, /^auto-learn: Unknown arguments \["--host=other"\]/);
 });
 
 test("the server script speaks JSON-RPC over stdio and exits when stdin closes", async (t) => {
