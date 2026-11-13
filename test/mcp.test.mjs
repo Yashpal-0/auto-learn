@@ -75,6 +75,8 @@ test("the server script speaks JSON-RPC over stdio and exits when stdin closes",
 		env: { ...process.env, AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"), CLAUDE_PROJECT_DIR: path.join(root, "project") },
 		stdio: ["pipe", "pipe", "inherit"],
 	});
+	// A failed assertion skips closing stdin, and the running server would keep the test from ending.
+	t.after(() => child.kill());
 	const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
 	const next = async () => JSON.parse((await replies.next()).value);
 	const exited = new Promise((resolve) => child.once("exit", resolve));
