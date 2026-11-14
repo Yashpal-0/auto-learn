@@ -51,10 +51,11 @@ function claudeConfigDir(env) {
 
 /**
  * The personal skills directory the agent discovers, which holds the managed
- * skills: ~/.claude/skills for Claude Code, ~/.agents/skills for Codex.
+ * skills: ~/.claude/skills, ~/.agents/skills, or $XDG_CONFIG_HOME/opencode/skills.
  */
 export function skillsDir(env = process.env, host = "claude") {
 	if (env.AUTO_LEARN_SKILLS_DIR) return path.resolve(env.AUTO_LEARN_SKILLS_DIR);
+	if (host === "opencode") return path.resolve(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode", "skills");
 	return path.resolve(host === "codex" ? path.join(os.homedir(), ".agents", "skills") : path.join(claudeConfigDir(env), "skills"));
 }
 

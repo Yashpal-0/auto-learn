@@ -1,0 +1,23 @@
+{
+  "name": "auto-learn",
+  "version": "0.3.0",
+  "description": "Save reusable procedures from your work as personal skills in OpenCode.",
+  "type": "module",
+  "exports": {
+    ".": "./opencode/index.mjs"
+  },
+  "files": ["opencode", "scripts/lib", "prompts", ".claude-plugin/plugin.json"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Yashpal-0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yashpal-0/auto-learn.git"
+  },
+  "homepage": "https://github.com/Yashpal-0/auto-learn"
+}

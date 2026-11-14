@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - 2026-11-14
+
+- auto-learn now runs as a native OpenCode V2 plugin. Install it directly from GitHub with `opencode plugin add github:Yashpal-0/auto-learn`. It adds `manage_skill`, saves to OpenCode's own skill library, and refreshes discovered skills after changes.
+- Successful eligible root-session turns receive a transient, tool-free review through the session's model. Validated create/update proposals use the existing protected skill store. Reviews add no conversation turns, cannot delete skills, honor permission rules without background prompts, and discard late results after cancellation or timeout. The README documents usage costs and the native API's cancellation limitation.
+- Claude Code and Codex keep their existing hooks, MCP configuration and skill libraries.
+
 ## 0.2.0 - 2026-11-13
 
 - auto-learn now runs in Codex. Install it with `codex plugin marketplace add Yashpal-0/auto-learn` and `codex plugin add auto-learn@auto-learn`, then trust its hooks with `/hooks`. After an eligible turn, a background fork of the session made with `codex app-server` reviews the turn and saves what it worked out as a skill in `~/.agents/skills`, the folder Codex reads personal skills from. The fork runs with the approval policy `never` and a read-only sandbox, and approves `manage_skill` alone. The README's Codex section has the details.

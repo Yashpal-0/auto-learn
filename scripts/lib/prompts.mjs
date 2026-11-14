@@ -1,6 +1,6 @@
 // The texts the plugin gives to the model: the session guidance with the
 // learned skills, the manage_skill description, and the request a capture fork
-// receives. Codex gets its own wording, from prompts/codex.
+// receives. Each host gets its own wording.
 import { readFileSync } from "node:fs";
 import { displayPath } from "./config.mjs";
 
@@ -9,9 +9,9 @@ const MAX_LISTING_CHARS = 4000;
 const PREVIEW_CHARS = 160;
 const MIN_SENTENCE_CHARS = 40;
 
-/** @param {"claude" | "codex"} host */
+/** @param {"claude" | "codex" | "opencode"} host */
 function template(name, host) {
-	const folder = host === "codex" ? "codex/" : "";
+	const folder = host === "codex" || host === "opencode" ? `${host}/` : "";
 	return readFileSync(new URL(`../../prompts/${folder}${name}.md`, import.meta.url), "utf8");
 }
 

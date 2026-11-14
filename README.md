@@ -1,12 +1,12 @@
 # auto-learn
 
-auto-learn lets Claude Code learn skills from your own work. After a turn in which Claude worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background copy of the session looks back at the turn and saves the procedure as a personal skill. Claude Code then offers that skill in later sessions whenever a task matches it, and auto-learn lists your learned skills at the start of each session with what each one is for.
+auto-learn lets Claude Code, Codex and OpenCode learn skills from your own work. After a turn in which the agent worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background review looks back at the turn and saves the procedure as a personal skill. The agent then offers that skill whenever a later task matches it.
 
-Claude can also save skills on its own during a session with the `manage_skill` tool that the plugin adds.
+Each agent can also save skills during a session with the `manage_skill` tool that the plugin adds.
 
-auto-learn works in Codex too, with a skill library of its own: see [Codex](#codex).
+Each host writes to its own skill library: see [Codex](#codex) and [OpenCode](#opencode) for their installation and behavior.
 
-## Install
+## Install in Claude Code
 
 ```sh
 claude plugin marketplace add Yashpal-0/auto-learn
@@ -20,7 +20,7 @@ auto-learn needs:
 - Node.js 18 or later on `PATH`. The hooks and the MCP server are Node scripts with no dependencies.
 - The `claude` command on the `PATH` that Claude Code passes to its hooks. Each review runs `claude` in the background.
 
-## How a review works
+## How a review works in Claude Code
 
 1. At session start, the plugin tells Claude about `manage_skill` and where skills are saved, and lists the learned skills (see [Skills](#skills)).
 2. When a turn ends, the Stop hook counts the turn's tool calls. The turn is queued for review when it made at least `minToolCalls` tool calls (5 by default), the session has someone at the keyboard (the terminal, an IDE, the desktop app), and the session is not in plan mode. `claude -p`, SDK and background sessions are not reviewed. The hook returns at once and starts a worker; you carry on while the review runs.
@@ -234,6 +234,96 @@ codex plugin marketplace remove auto-learn
 
 Learned skills stay in `~/.agents/skills`. If `~/.codex/plugins/data/auto-learn-auto-learn` is still there afterwards, delete it to remove the log.
 
+## OpenCode
+
+auto-learn runs as a native OpenCode V2 server plugin. It adds `manage_skill` in the `auto_learn` namespace, lists discoverable learned skills in session instructions, and refreshes OpenCode's skill catalog after a save. It does not need a separate MCP server or the `claude` or `codex` commands.
+
+OpenCode's file watcher discovers new skill files asynchronously, so the catalog can lag a successful save briefly. Tested with OpenCode `2.3.0-dev` on Linux, using a local deterministic provider for manual and automatic saves; real-provider costs and cache reuse remain unmeasured.
+
+### Install in OpenCode
+
+Install directly from GitHub:
+
+```sh
+opencode plugin add github:Yashpal-0/auto-learn
+opencode plugin list
+```
+
+OpenCode installs the package and adds it to your global configuration. Watched configuration changes reload plugins automatically; use `opencode reload` if you need to force a reload. Do not copy the Claude/Codex hooks into OpenCode: those hosts use different plugin APIs.
+
+To check or install a later GitHub update:
+
+```sh
+opencode plugin check
+opencode plugin update github:Yashpal-0/auto-learn
+```
+
+### How a review works in OpenCode
+
+1. A successfully completed root-session turn is eligible when it contains a user prompt, used at least `minToolCalls` tools, and did not use the `plan` agent. Child/subagent sessions, failed or interrupted turns, and synthetic-only work are not reviewed. Root sessions from `opencode run` are eligible too; OpenCode's public plugin API does not identify whether someone is at the keyboard.
+2. The plugin requests a transient generation from the session's current context, using OpenCode's selected model and variant. This is not a new conversation turn or a fork: no review prompt or reply is added to history, and no review session appears in the session list. OpenCode counts the review's usage in the original session's totals.
+3. The review executes no tools. It returns JSON `null` or one proposed skill to create or update. The plugin validates the response and passes a proposal through the same skill store as `manage_skill`, including ownership, size, name and credential checks. Automatic reviews cannot delete skills.
+4. A new prompt or execution, moving or deleting the session, plugin unload, or a five-minute deadline discards a pending review result. At most one review runs per session and four per plugin location; turns that exceed that limit are skipped rather than queued. Reviews use no subprocesses.
+
+The OpenCode Promise plugin API currently does not propagate request cancellation options. Discarding a review result prevents a late response from starting a save, but an already-sent provider request may finish and consume tokens. A filesystem write already in progress may also finish.
+
+### Skills and permissions in OpenCode
+
+Skills go to `~/.config/opencode/skills/<name>/SKILL.md`, or `$XDG_CONFIG_HOME/opencode/skills` when set. `AUTO_LEARN_SKILLS_DIR` overrides that location for testing; OpenCode must discover an override before it can offer those skills. As in the other hosts, the `.auto-learn` marker identifies skills the plugin may change.
+
+An update replaces the skill's full description and instructions. The review is told to update only when its current text is visible and to preserve useful steps, but model-written edits can still lose details. Remove the `.auto-learn` marker to keep a skill under your control.
+
+Before creating a skill, the plugin checks OpenCode's full discovered catalog, including compatibility folders, ancestor project folders, flat Markdown skills and configured sources. An existing skill with the same ID is never overwritten. Updating or deleting still requires a managed skill in OpenCode's own library; installing this plugin does not migrate or change your existing Claude/Codex skills.
+
+The permission action is `auto_learn_manage_skill`, with the skill name as its resource. Normal calls follow your OpenCode permission rules. Automatic saves obey those rules too, but refuse an `ask` result instead of opening a background permission prompt. If your rules require approval by default, allow this tool to enable automatic saves:
+
+```jsonc
+{
+  "permissions": [
+    { "action": "auto_learn_manage_skill", "resource": "*", "effect": "allow" }
+  ]
+}
+```
+
+This grants writes only through the managed skill store; it does not grant shell access or general file editing.
+
+### Options in OpenCode
+
+Use the existing plugin entry in `~/.config/opencode/opencode.json(c)` rather than adding a second copy:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "github:Yashpal-0/auto-learn",
+      "options": {
+        "autoCapture": true,
+        "minToolCalls": 5
+      }
+    }
+  ]
+}
+```
+
+`autoCapture: false` leaves manual `manage_skill` calls available. `minToolCalls` must be a non-negative whole number; `0` reviews successful user turns with no tools. Unlike the Claude/Codex hooks, OpenCode reads these native options rather than `CLAUDE_PLUGIN_OPTION_*` environment variables.
+
+### Log, cost and privacy in OpenCode
+
+The activity log is `~/.local/share/opencode/auto-learn/auto-learn.log`, or `$XDG_DATA_HOME/opencode/auto-learn/auto-learn.log`. It uses the same `queued`, `skip` and `capture` events and 1 MiB rotation as the other hosts. A capture records its outcome, duration, available usage/cost figures, and the names of skills it saved, never conversation text or the model's raw review response. Review bookkeeping uses OpenCode's plugin-scoped storage.
+
+A review is an extra request through the session's provider and account. Prompt-cache reuse and real-provider costs have not been measured. The local log records usage reported by OpenCode; those tokens and costs are also included in the session's totals. Raise `minToolCalls` or turn off `autoCapture` to reduce usage.
+
+The plugin does not read OpenCode's database or send conversations to a separate service. OpenCode resends the session context to its configured model provider for each review. Skills remain local, and the shared credential checks also apply to OpenCode saves.
+
+### Uninstall from OpenCode
+
+```sh
+opencode plugin remove github:Yashpal-0/auto-learn
+```
+
+Learned skills and the activity log remain. Remove the `.auto-learn` marker from a skill to take ownership, as in the other hosts.
+
 ## Development
 
 The plugin has no dependencies. Run the tests with:
@@ -254,6 +344,20 @@ In Codex, install a checkout the same way. Codex copies the plugin when you add 
 ```sh
 codex plugin marketplace add ./
 codex plugin add auto-learn@auto-learn
+```
+
+In OpenCode V2, load the checkout as a plugin directory in your project configuration:
+
+```jsonc
+{
+  "plugins": ["/absolute/path/to/auto-learn"]
+}
+```
+
+To test the packed package in an isolated real OpenCode server with a deterministic local model provider, without using your account or changing your configuration:
+
+```sh
+node test/opencode-live.mjs
 ```
 
 ## License

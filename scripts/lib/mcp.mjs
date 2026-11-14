@@ -10,7 +10,7 @@ const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05
 const SANDBOX_STATE = "codex/sandbox-state";
 
 /** @param {string} agent The agent that offers saved skills. */
-function inputSchema(agent) {
+export function inputSchema(agent) {
 	return {
 		type: "object",
 		properties: {

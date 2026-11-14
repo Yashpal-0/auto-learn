@@ -40,6 +40,17 @@ test("Codex gets its own wording: its skill library, its name, and tool_search t
 	assert.doesNotMatch(nudge, /Claude|select:|\{\{/);
 });
 
+test("OpenCode guidance names the native tool and its own skill library", () => {
+	const library = path.join(os.homedir(), ".config", "opencode", "skills");
+	const guidance = guidanceText(library, "opencode");
+	const description = manageSkillDescription(library, "opencode");
+	assert.match(guidance, /OpenCode/);
+	assert.match(guidance, /auto_learn/);
+	assert.ok(guidance.includes(path.join("~", ".config", "opencode", "skills")));
+	assert.match(description, /OpenCode/);
+	assert.doesNotMatch(`${guidance}\n${description}`, /Claude|Codex|\{\{/);
+});
+
 test("the learned-skill listing gives each skill a short description", () => {
 	assert.equal(learnedSkillsText([]), "");
 	const sentence = "Use when the docs build fails on a missing theme package.";

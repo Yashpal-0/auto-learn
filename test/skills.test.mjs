@@ -103,6 +103,13 @@ test("for Codex, create refuses a name a project skill in .agents/skills uses, a
 	assert.match(await create(codex, "claude-only"), /^Created skill/);
 });
 
+test("for OpenCode, create refuses a name a project skill in .opencode/skills uses", async (t) => {
+	const { context } = await library(t);
+	await authoredSkill(path.join(context.projectDir, ".opencode", "skills"), "deploy-docs");
+	await assert.rejects(create({ ...context, host: "opencode" }, "deploy-docs"), /another name/);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "deploy-docs")));
+});
+
 test("create and update require a description and a body", async (t) => {
 	const { context } = await library(t);
 	await assert.rejects(manageSkill({ action: "create", name: "a", body: "b" }, context), /description and body/);

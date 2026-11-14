@@ -11,11 +11,14 @@ const EVENTS = { SessionStart: "session-start", Stop: "stop", SessionEnd: "sessi
 const hookCommands = (file) =>
 	Object.entries(readJson(file).hooks).flatMap(([event, groups]) => groups.flatMap((group) => group.hooks.map((hook) => [event, hook.command])));
 
-test("the Claude Code and Codex manifests name the same plugin at the same version", () => {
+test("the Claude Code, Codex and OpenCode manifests name the same plugin at the same version", () => {
 	const claude = readJson(".claude-plugin/plugin.json");
 	const codex = readJson(".codex-plugin/plugin.json");
+	const opencode = readJson("package.json");
 	assert.equal(codex.name, claude.name);
 	assert.equal(codex.version, claude.version);
+	assert.equal(opencode.name, claude.name);
+	assert.equal(opencode.version, claude.version);
 	assert.equal(readJson(".claude-plugin/marketplace.json").plugins[0].name, claude.name);
 });
 
@@ -36,4 +39,17 @@ test("Claude Code runs the hooks and the MCP server without a host argument", ()
 
 test("every prompt has a Codex version", () => {
 	assert.deepEqual(readdirSync(path.join(ROOT, "prompts", "codex")).sort(), readdirSync(path.join(ROOT, "prompts")).filter((name) => name.endsWith(".md")).sort());
+});
+
+test("the dependency-free package exports a native OpenCode plugin and ships its runtime files", async () => {
+	const manifest = readJson("package.json");
+	const { default: plugin } = await import(new URL(`../${manifest.exports["."]}`, import.meta.url));
+	assert.equal(plugin.id, "auto-learn");
+	assert.equal(typeof plugin.setup, "function");
+	assert.deepEqual(manifest.dependencies ?? {}, {});
+	for (const name of manifest.files) assert.ok(existsSync(path.join(ROOT, name)), name);
+});
+
+test("every prompt has an OpenCode version", () => {
+	assert.deepEqual(readdirSync(path.join(ROOT, "prompts", "opencode")).sort(), readdirSync(path.join(ROOT, "prompts")).filter((name) => name.endsWith(".md")).sort());
 });

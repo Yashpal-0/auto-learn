@@ -33,6 +33,12 @@ test("Codex's skill library is ~/.agents/skills, which Codex discovers, unless A
 	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "codex"), path.resolve("/elsewhere"));
 });
 
+test("OpenCode's skill library follows XDG_CONFIG_HOME and stays separate from Claude and Codex", () => {
+	assert.equal(skillsDir({}, "opencode"), path.join(os.homedir(), ".config", "opencode", "skills"));
+	assert.equal(skillsDir({ XDG_CONFIG_HOME: "/cfg", CLAUDE_CONFIG_DIR: "/claude" }, "opencode"), path.resolve("/cfg/opencode/skills"));
+	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "opencode"), path.resolve("/elsewhere"));
+});
+
 test("the host is Claude Code without arguments and Codex with --host=codex; anything else is refused", () => {
 	assert.equal(parseHost([]), "claude");
 	assert.equal(parseHost(["--host=codex"]), "codex");
