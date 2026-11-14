@@ -58,5 +58,5 @@
 - [x] Add package/export tests, bump the release to `0.3.0`, and document OpenCode installation, options, review behavior, cost, privacy, and limits.
 - [x] Run `node --test test/*.test.mjs` and inspect `npm pack --dry-run`.
 - [x] Exercise the packaged plugin in an isolated real OpenCode server using a local deterministic provider; inspect the written skill and review log.
-- [ ] Review the complete diff, then commit and push to `origin/main` without rewriting history.
-- [ ] Run `opencode plugin add github:Yashpal-0/auto-learn`; verify the installed revision, active plugin, and registered tool.
+- [x] Review the complete diff, then commit and push to `origin/main` without rewriting history.
+- [x] Run `opencode plugin add github:Yashpal-0/auto-learn`; verify the installed revision, active plugin, and registered tool.
