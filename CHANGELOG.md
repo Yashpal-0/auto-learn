@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 - 2026-11-16
 
 - Claude Code: `manage_skill` can read a managed skill's full text and revision. Updates and deletes require that revision and refuse stale copies, so a review cannot silently replace another session's saved steps. Exclusive locks serialize changes across MCP processes. Existing skill files need no conversion; callers must read before updating or deleting.
 - Claude Code: skill creation checks ancestor project skills up to the Git repository or worktree root, main-checkout skills and commands inherited by a linked worktree, and legacy commands in project and personal `.claude/commands` folders, before creating a personal skill that would shadow them.
