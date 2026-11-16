@@ -4,23 +4,45 @@
 //   create    the same, but run manage_skill through the plugin's MCP server as
 //             codex/mcp.json starts it, if the fork's configuration approves it
 //             for the plugin $FAKE_CODEX_PLUGIN_ID
+//   overlap   the same as create, while another session saves a skill to the library
 //   tools     finish the turn after other tool calls besides manage_skill
+//   unknown-action  as ok, but the manage_skill call uses an action the store does not know
+//   explore   after the manage_skill call, call 4 other tools and never finish the turn
+//   burst     the same, but call 12 other tools at once
+//   spawn-v1  after the manage_skill call, start spawning a subagent as multi_agent_v1 does, and never finish
+//   spawn-v2  the same, but report the subagent's start and end as multi_agent_v2 does, once it is running
 //   request   ask the client to approve a command before finishing the turn
 //   fail      refuse to fork the thread
 //   turn-fail finish the turn as failed
 //   exit      exit with an error at initialize
-//   hang      never finish the turn
+//   hang      never finish the turn, and write $FAKE_CODEX_RECORD.hung once all is sent
 // Like codex, it exits once its stdin closes.
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
+import { manageSkill } from "../scripts/lib/skills.mjs";
 
 const PLUGIN_ROOT = process.env.FAKE_CODEX_PLUGIN_ROOT || new URL("..", import.meta.url).pathname;
 const FORK_ID = "fork-thread";
 const FORK_TURN_ID = "fork-turn";
 const SESSION_TOTAL = { inputTokens: 50_000, cachedInputTokens: 40_000, outputTokens: 3_000 };
+const SKILL_ARGUMENTS = { action: "create", name: "fake-skill", description: "Use when testing the fake", body: "1. Do it." };
+/** Tool calls besides manage_skill, with arguments and output that no log may hold. */
+const EXPLORE_ITEMS = [
+	{ type: "commandExecution", id: "e1", command: "cat ~/.aws/credentials", aggregatedOutput: "aws_secret_access_key=hunter2", status: "completed" },
+	{ type: "commandExecution", id: "e2", command: "ls", aggregatedOutput: "README.md", status: "completed" },
+	{ type: "dynamicToolCall", id: "e3", namespace: "ide", tool: "open_file", arguments: { path: "hunter2.txt" }, status: "completed" },
+	{ type: "dynamicToolCall", id: "e4", namespace: null, tool: "lookup", arguments: {}, status: "failed" },
+];
+const BURST_ITEMS = Array.from({ length: 12 }, (_, i) => ({
+	type: "mcpToolCall",
+	id: `b${i + 1}`,
+	server: "github",
+	tool: `tool_${i + 1}`,
+	status: "completed",
+}));
 const mode = process.env.FAKE_CODEX_MODE;
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(CLAUDE|PLUGIN_|AUTO_LEARN|CODEX)/.test(key)));
@@ -61,12 +83,28 @@ async function callManageSkill(cwd) {
 		method: "tools/call",
 		params: {
 			name: "manage_skill",
-			arguments: { action: "create", name: "fake-skill", description: "Use when testing the fake", body: "1. Do it." },
+			arguments: SKILL_ARGUMENTS,
 			...(hasSandboxState ? { _meta: { "codex/sandbox-state": { sandboxCwd: pathToFileURL(cwd).href } } } : {}),
 		},
 	});
 	child.stdin.end();
 	return reply.result;
+}
+
+/** Makes the fork's manage_skill call and reports its item as Codex does: "failed" when the call was declined or its result has isError. */
+async function skillCall() {
+	const skillArguments = mode === "unknown-action" ? { action: "rename", name: "fake-skill" } : SKILL_ARGUMENTS;
+	const item = { type: "mcpToolCall", id: "m2", server: "auto-learn", tool: "manage_skill", arguments: skillArguments };
+	if (mode !== "create" && mode !== "overlap") return { ...item, status: "completed", result: { content: [] }, error: null };
+	const approval = fork.config?.[`plugins.${process.env.FAKE_CODEX_PLUGIN_ID}.mcp_servers.auto-learn.tools.manage_skill.approval_mode`];
+	if (approval !== "approve" || fork.approvalPolicy !== "never") {
+		return { ...item, status: "failed", result: null, error: { message: "user rejected MCP tool call" } };
+	}
+	record.toolResult = await callManageSkill(fork.cwd);
+	save();
+	// Codex leaves isError out of the result it reports.
+	const { isError, ...result } = record.toolResult;
+	return { ...item, status: isError ? "failed" : "completed", result, error: null };
 }
 
 async function runTurn() {
@@ -88,13 +126,40 @@ async function runTurn() {
 		record.requestReply = await reply;
 		save();
 	}
-	const approval = fork.config?.[`plugins.${process.env.FAKE_CODEX_PLUGIN_ID}.mcp_servers.auto-learn.tools.manage_skill.approval_mode`];
-	if (mode === "create" && approval === "approve" && fork.approvalPolicy === "never") record.toolResult = await callManageSkill(fork.cwd);
-	save();
-	notify("item/completed", { turnId: FORK_TURN_ID, item: { type: "mcpToolCall", id: "m2", server: "auto-learn", tool: "manage_skill", status: "completed" } });
+	if (mode === "overlap") {
+		await manageSkill(
+			{ action: "create", name: "other-skill", description: "Use when another session needs it", body: "1. Saved by another session." },
+			{ skillsDir: process.env.AUTO_LEARN_SKILLS_DIR },
+		);
+	}
+	notify("item/completed", { turnId: FORK_TURN_ID, item: await skillCall() });
 	total = add(total, { inputTokens: 1500, cachedInputTokens: 1400, outputTokens: 50 });
 	notify("thread/tokenUsage/updated", { turnId: FORK_TURN_ID, tokenUsage: usage(total, { inputTokens: 1500, cachedInputTokens: 1400, outputTokens: 50 }) });
-	if (mode === "hang") return;
+	if (mode === "explore" || mode === "burst") {
+		// One write, so the client reads every call however soon it stops the fork.
+		const items = mode === "explore" ? EXPLORE_ITEMS : BURST_ITEMS;
+		process.stdout.write(
+			items.map((item) => `${JSON.stringify({ method: "item/completed", params: { threadId: FORK_ID, turnId: FORK_TURN_ID, item } })}\n`).join(""),
+		);
+		return;
+	}
+	if (mode === "spawn-v1") {
+		const item = { type: "collabAgentToolCall", id: "a1", tool: "spawnAgent", status: "inProgress", senderThreadId: FORK_ID, receiverThreadIds: [], prompt: "Read ~/hunter2.txt", agentsStates: {} };
+		notify("item/started", { turnId: FORK_TURN_ID, item });
+		return;
+	}
+	if (mode === "spawn-v2") {
+		const item = { type: "subAgentActivity", id: "a1", kind: "started", agentThreadId: "child-thread", agentPath: "/root/hunter2", model: "gpt-test" };
+		// One write, so the client reads the end as well as the start before it stops the fork.
+		process.stdout.write(
+			["item/started", "item/completed"].map((method) => `${JSON.stringify({ method, params: { threadId: FORK_ID, turnId: FORK_TURN_ID, item } })}\n`).join(""),
+		);
+		return;
+	}
+	if (mode === "hang") {
+		writeFileSync(`${process.env.FAKE_CODEX_RECORD}.hung`, "");
+		return;
+	}
 	const ending = mode === "turn-fail" ? { status: "failed", error: { message: "You've hit your usage limit." } } : { status: "completed", error: null };
 	notify("turn/completed", { turn: { id: FORK_TURN_ID, ...ending } });
 }

@@ -10,6 +10,12 @@
   "repository": "https://github.com/Yashpal-0/auto-learn",
   "license": "MIT",
   "keywords": ["skills", "learning", "automation", "hooks", "mcp"],
+  "mcpServers": {
+    "auto-learn": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"]
+    }
+  },
   "userConfig": {
     "autoCapture": {
       "type": "boolean",

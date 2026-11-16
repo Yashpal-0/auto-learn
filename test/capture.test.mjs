@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { captureTurn, drainQueue, GATE_SETTINGS, MANAGE_SKILL_TOOL, runFork } from "../scripts/lib/capture.mjs";
+import { captureTurn, drainQueue, GATE_SETTINGS, MANAGE_SKILL_TOOL, requestedSave, runFork, skillChanges } from "../scripts/lib/capture.mjs";
 import { captureNudge } from "../scripts/lib/prompts.mjs";
 import { acquireLock, forgetSession, queueCapture, takeJob, writeSessionState } from "../scripts/lib/state.mjs";
 import { entry, linked, tempDir, toJsonl, turnWithToolCalls } from "./helpers.mjs";
@@ -41,11 +41,13 @@ async function world(t, mode, entries = [...turnWithToolCalls(5), entry.summary(
 	await fs.mkdir(bin);
 	await fs.writeFile(path.join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_CLAUDE}" "$@"\n`, { mode: 0o755 });
 	const record = path.join(root, "record.json");
+	const transcriptPath = path.join(root, "session.jsonl");
 	const env = {
 		...process.env,
 		PATH: `${bin}${path.delimiter}${process.env.PATH}`,
 		FAKE_CLAUDE_MODE: mode,
 		FAKE_CLAUDE_RECORD: record,
+		FAKE_CLAUDE_TRANSCRIPT: transcriptPath,
 		CLAUDE_PLUGIN_DATA: path.join(root, "data"),
 		AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"),
 		CLAUDE_CONFIG_DIR: path.join(root, "config"),
@@ -54,7 +56,6 @@ async function world(t, mode, entries = [...turnWithToolCalls(5), entry.summary(
 	const projectDir = path.join(root, "project");
 	await fs.mkdir(projectDir);
 	const chain = linked(entries);
-	const transcriptPath = path.join(root, "session.jsonl");
 	await fs.writeFile(transcriptPath, toJsonl(chain));
 	const job = { sessionId: "s1", transcriptPath, start: 0, end: Buffer.byteLength(toJsonl(chain.slice(0, -2))), projectDir };
 	const recorded = async () => JSON.parse(await fs.readFile(record, "utf8"));
@@ -62,14 +63,20 @@ async function world(t, mode, entries = [...turnWithToolCalls(5), entry.summary(
 }
 
 const flagValue = (args, flag) => args[args.indexOf(flag) + 1];
-const fork = (w, options = {}) => runFork({ sessionId: "s1", forkAt: "u12", cwd: w.job.projectDir, env: w.env, ...options });
+const fork = (w, options = {}) =>
+	runFork({ sessionId: "s1", transcriptPath: w.job.transcriptPath, forkAt: "u12", cwd: w.job.projectDir, env: w.env, ...options });
+// What runFork reports besides the outcome when claude printed nothing before it was stopped.
+const NOTHING_PRINTED = { turns: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, advisorCalls: 0, refusedCalls: 0, refusedTools: [], saves: [] };
 
-/** Writes Claude Code's global configuration, as it reads after `sessionId` exited having cost `costUsd`. */
-async function recordSessionCost(w, sessionId, costUsd, text) {
-	const lastModelUsage = { "claude-test-1": { costUSD: costUsd - 1 }, "claude-test-2": { costUSD: 1 } };
-	const projects = { "/work/project": { lastSessionId: sessionId, lastCost: costUsd, lastModelUsage } };
-	await fs.mkdir(w.env.CLAUDE_CONFIG_DIR, { recursive: true });
-	await fs.writeFile(path.join(w.env.CLAUDE_CONFIG_DIR, ".claude.json"), text ?? JSON.stringify({ projects }));
+/** Appends the cost-state entry Claude Code writes to the transcript when `sessionId` exits having cost `costUsd`. */
+async function recordSessionCost(w, sessionId, costUsd, modelUsage = { "claude-test-1": { costUSD: costUsd - 1 }, "claude-test-2": { costUSD: 1 } }) {
+	await fs.appendFile(w.job.transcriptPath, `${JSON.stringify({ type: "cost-state", sessionId, totalCostUSD: costUsd, modelUsage })}\n`);
+}
+
+/** The parts of a runFork record that say what the fork cost. */
+async function forkCostFields(w, options) {
+	const { costUsd, sessionCostUsd, reportedCostUsd } = await fork(w, options);
+	return { costUsd, sessionCostUsd, reportedCostUsd };
 }
 
 /** Waits for a file that a child process writes; real time, since the child runs on its own clock. */
@@ -99,6 +106,8 @@ test("runFork forks the session at the turn's end as a new session with every to
 		outputTokens: 20,
 		advisorCalls: 0,
 		refusedCalls: 0,
+		refusedTools: [],
+		saves: [],
 	});
 
 	const { args, stdin, cwd, env: forkEnv } = await w.recorded();
@@ -106,7 +115,7 @@ test("runFork forks the session at the turn's end as a new session with every to
 	for (const [flag, value] of [
 		["--resume", "s1"],
 		["--resume-session-at", "u12"],
-		["--output-format", "json"],
+		["--output-format", "stream-json"],
 		["--permission-mode", "dontAsk"],
 		["--settings", GATE_SETTINGS],
 		["--max-turns", "10"],
@@ -136,9 +145,12 @@ test("runFork leaves the model and effort to claude when the session's are unkno
 	assert.equal(args.includes("--effort"), false);
 });
 
-test("the gate refuses every tool but manage_skill and ToolSearch", async () => {
+test("the gate refuses every tool but manage_skill and ToolSearch, even when it cannot run", async () => {
 	const gate = JSON.parse(GATE_SETTINGS).hooks.PreToolUse;
 	assert.equal(gate.length, 1);
+	// Without "block", a gate that cannot start or times out lets the tool run.
+	assert.equal(gate[0].hooks[0].onFailure, "block");
+	assert.equal(gate[0].hooks[0].timeout, 10);
 	// Claude Code reads a matcher with characters beyond names and | as a regular expression.
 	const matches = (tool) => new RegExp(gate[0].matcher).test(tool);
 	for (const tool of ["Bash", "Write", "mcp__github__create_issue", "ToolSearchX", `${MANAGE_SKILL_TOOL}2`, "manage_skill"]) {
@@ -156,10 +168,25 @@ test("the gate refuses every tool but manage_skill and ToolSearch", async () => 
 	});
 });
 
-test("runFork counts the fork's advisor calls and the calls the gate refused", async (t) => {
+test("runFork counts the fork's advisor calls and the calls the gate refused, names the first 10 refused tools, and counts no failed save", async (t) => {
 	const w = await world(t, "tools");
-	const { advisorCalls, refusedCalls } = await fork(w);
-	assert.deepEqual({ advisorCalls, refusedCalls }, { advisorCalls: 1, refusedCalls: 1 });
+	const { advisorCalls, refusedCalls, refusedTools, saves } = await fork(w);
+	const longName = `mcp__wide__${"x".repeat(300)}`;
+	assert.deepEqual(
+		{ advisorCalls, refusedCalls, refusedTools, saves },
+		{
+			advisorCalls: 1,
+			refusedCalls: 12,
+			refusedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "Agent", `${longName.slice(0, 256)}… [55 more characters]`],
+			saves: [],
+		},
+	);
+});
+
+test("runFork leaves out a line of claude's output over 8 MiB and reads the lines after it", async (t) => {
+	const w = await world(t, "huge");
+	const { outcome, refusedCalls, refusedTools } = await fork(w);
+	assert.deepEqual({ outcome, refusedCalls, refusedTools }, { outcome: "ok", refusedCalls: 1, refusedTools: ["Read"] });
 });
 
 test("a failed, garbled, missing or hung claude is reported, not thrown", async (t) => {
@@ -173,47 +200,60 @@ test("a failed, garbled, missing or hung claude is reported, not thrown", async 
 		outputTokens: 20,
 		advisorCalls: 0,
 		refusedCalls: 0,
+		refusedTools: [],
 		error: "Invalid API key",
+		saves: [],
 	});
 
 	const garbled = await world(t, "garbage");
-	assert.deepEqual(await fork(garbled), { outcome: "error", error: "claude's output is not a JSON result (exit 0): no error output" });
+	assert.deepEqual(await fork(garbled), { outcome: "error", error: "claude ended without a result (exit 0): no error output", saves: [] });
 
 	const missing = await world(t, "ok");
 	assert.deepEqual(await fork(missing, { env: { ...missing.env, PATH: missing.root } }), {
 		outcome: "error",
 		error: "the claude CLI was not found on PATH",
+		saves: [],
 	});
 
 	const hung = await world(t, "hang");
-	assert.deepEqual(await fork(hung, { timeoutMs: 300 }), { outcome: "timeout" });
+	assert.deepEqual(await fork(hung, { timeoutMs: 300 }), { outcome: "timeout", ...NOTHING_PRINTED });
 });
 
-test("the logged cost leaves out the session's earlier cost, which claude counts into a resumed fork's total", async (t) => {
+test("the logged cost leaves out what the session cost before, which claude counts into a resumed fork's total", async (t) => {
+	const fresh = await world(t, "ok");
+	assert.deepEqual(await forkCostFields(fresh), { costUsd: 0.0123, sessionCostUsd: undefined, reportedCostUsd: undefined });
+
+	// claude restores the session's last cost-state entry; Claude Code's configuration names only the project's last session.
 	const resumed = await world(t, "ok");
+	await recordSessionCost(resumed, "s1", 5);
 	await recordSessionCost(resumed, "s1", 11);
-	const { costUsd, sessionCostUsd, reportedCostUsd } = await fork(resumed);
-	assert.deepEqual({ costUsd, sessionCostUsd, reportedCostUsd }, { costUsd: 0.0123, sessionCostUsd: 11, reportedCostUsd: undefined });
-
-	const other = await world(t, "ok");
-	await recordSessionCost(other, "another-session", 11);
-	const record = await fork(other);
-	assert.deepEqual([record.costUsd, record.sessionCostUsd], [0.0123, undefined]);
+	await recordSessionCost(resumed, "another-session", 99);
+	await fs.mkdir(resumed.env.CLAUDE_CONFIG_DIR);
+	const projects = { "/work/project": { lastSessionId: "another-session", lastCost: 99, lastModelUsage: {} } };
+	await fs.writeFile(path.join(resumed.env.CLAUDE_CONFIG_DIR, ".claude.json"), JSON.stringify({ projects }));
+	assert.deepEqual(await forkCostFields(resumed), { costUsd: 0.0123, sessionCostUsd: 11, reportedCostUsd: undefined });
 });
 
-test("the full total is logged as the cost when the fork did not count on from the session's record", async (t) => {
-	const w = await world(t, "ok");
-	w.env.FAKE_CLAUDE_RESTORE = "off";
-	await recordSessionCost(w, "s1", 11);
-	const { costUsd, sessionCostUsd } = await fork(w);
-	assert.deepEqual({ costUsd, sessionCostUsd }, { costUsd: 0.0123, sessionCostUsd: undefined });
-});
+test("claude's total is logged under its own name, never as the cost, when the fork's own cost cannot be told", async (t) => {
+	// The fork's per-model totals fall short of the session's, so it did not count on from them.
+	const unrestored = await world(t, "ok");
+	unrestored.env.FAKE_CLAUDE_RESTORE = "off";
+	await recordSessionCost(unrestored, "s1", 11);
+	assert.deepEqual(await forkCostFields(unrestored), { costUsd: undefined, sessionCostUsd: undefined, reportedCostUsd: 0.0123 });
 
-test("when Claude Code's configuration cannot be read, claude's total is logged under its own name", async (t) => {
-	const w = await world(t, "ok");
-	await recordSessionCost(w, "s1", 11, '{"projects": {');
-	const { costUsd, reportedCostUsd } = await fork(w);
-	assert.deepEqual({ costUsd, reportedCostUsd }, { costUsd: undefined, reportedCostUsd: 0.0123 });
+	// An entry that names no model leaves nothing to check the fork's totals against.
+	const unnamed = await world(t, "ok");
+	unnamed.env.FAKE_CLAUDE_RESTORE = "off";
+	await recordSessionCost(unnamed, "s1", 11, {});
+	assert.deepEqual(await forkCostFields(unnamed), { costUsd: undefined, sessionCostUsd: undefined, reportedCostUsd: 0.0123 });
+
+	const unreadable = await world(t, "ok");
+	await recordSessionCost(unreadable, "s1", 11);
+	assert.deepEqual(await forkCostFields(unreadable, { transcriptPath: path.join(unreadable.root, "gone.jsonl") }), {
+		costUsd: undefined,
+		sessionCostUsd: undefined,
+		reportedCostUsd: 11.0123,
+	});
 });
 
 test("runFork stops the fork when aborted, and says why", async (t) => {
@@ -222,13 +262,44 @@ test("runFork stops the fork when aborted, and says why", async (t) => {
 	const pending = fork(w, { signal: controller.signal, timeoutMs: 30_000 });
 	await waitForFile(w.record);
 	controller.abort("the session ended");
-	assert.deepEqual(await pending, { outcome: "aborted", reason: "the session ended" });
+	assert.deepEqual(await pending, { outcome: "aborted", reason: "the session ended", ...NOTHING_PRINTED });
 
 	const early = await world(t, "hang");
 	assert.deepEqual(await fork(early, { signal: AbortSignal.abort("the session ended"), timeoutMs: 30_000 }), {
 		outcome: "aborted",
 		reason: "the session ended",
+		...NOTHING_PRINTED,
 	});
+});
+
+test("a fork stopped before its result still reports the tokens of the replies claude printed and the skills it saved", async (t) => {
+	// One reply printed as two lines, one per content block, each with the reply's usage.
+	const printed = {
+		turns: 1,
+		inputTokens: 46,
+		cacheReadTokens: 2,
+		outputTokens: 8,
+		advisorCalls: 0,
+		refusedCalls: 0,
+		refusedTools: [],
+		saves: [{ action: "create", name: "stalled-skill" }],
+	};
+	const aborted = await world(t, "stall");
+	const controller = new AbortController();
+	const stopped = fork(aborted, { signal: controller.signal, timeoutMs: 30_000 });
+	await waitForFile(`${aborted.record}.printed`);
+	controller.abort("the session ended");
+	assert.deepEqual(await stopped, { outcome: "aborted", reason: "the session ended", ...printed });
+});
+
+test("a fork stopped after it printed its result is reported by that result", async (t) => {
+	const w = await world(t, "linger");
+	const controller = new AbortController();
+	const pending = fork(w, { signal: controller.signal, timeoutMs: 30_000 });
+	await waitForFile(`${w.record}.printed`);
+	controller.abort("the session ended");
+	const { outcome, costUsd, reason } = await pending;
+	assert.deepEqual({ outcome, costUsd, reason }, { outcome: "ok", costUsd: 0.0123, reason: undefined });
 });
 
 test("captureTurn forks the session at the turn's last reply and reports the skills the fork saved", async (t) => {
@@ -238,6 +309,7 @@ test("captureTurn forks the session at the turn's last reply and reports the ski
 	assert.deepEqual([record.created, record.updated, record.deleted], [["fake-skill"], [], []]);
 	assert.equal(record.costUsd, 0.0123);
 	assert.ok(Number.isInteger(record.durationMs));
+	assert.equal(record.saves, undefined);
 	await fs.access(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "fake-skill", "SKILL.md"));
 
 	const { args, cwd } = await w.recorded();
@@ -246,6 +318,13 @@ test("captureTurn forks the session at the turn's last reply and reports the ski
 	assert.equal(flagValue(args, "--model"), "claude-test-1");
 	assert.equal(args.includes("--effort"), false);
 	assert.equal(cwd, await fs.realpath(w.job.projectDir));
+});
+
+test("captureTurn reports only the skills the fork saved, not one another session saved meanwhile", async (t) => {
+	const w = await world(t, "overlap");
+	const record = await captureTurn(w.job, { env: w.env });
+	assert.deepEqual([record.created, record.updated, record.deleted], [["fake-skill"], [], []]);
+	await fs.access(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "other-skill", "SKILL.md"));
 });
 
 test("captureTurn passes on the session's effort level, if it is a plain word", async (t) => {
@@ -356,7 +435,8 @@ test("the worker script captures the queued turn and logs what the capture did, 
 	assert.equal(record.session, "s1");
 	assert.equal(record.outcome, "ok");
 	assert.deepEqual(record.created, ["fake-skill"]);
-	assert.doesNotMatch(await readLog(w), /dev database|step \d|Done: the database/, "the log must not hold transcript text");
+	assert.equal(record.saves, undefined);
+	assert.doesNotMatch(await readLog(w), /dev database|step \d|Done: the database|this turn taught/, "the log must not hold transcript text");
 });
 
 test("the worker script stops a running capture once the session ends", async (t) => {
@@ -369,4 +449,36 @@ test("the worker script stops a running capture once the session ends", async (t
 	const record = await lastRecord(w);
 	assert.equal(record.outcome, "aborted");
 	assert.equal(record.reason, "the session ended");
+});
+
+test("skillChanges reports what a review's own saves changed, leaving out saves that undo each other", () => {
+	assert.deepEqual(skillChanges([]), { created: [], updated: [], deleted: [] });
+	const saves = [
+		{ action: "create", name: "new" },
+		{ action: "update", name: "new" },
+		{ action: "update", name: "old" },
+		{ action: "delete", name: "gone" },
+		{ action: "create", name: "brief" },
+		{ action: "delete", name: "brief" },
+		{ action: "delete", name: "redone" },
+		{ action: "create", name: "redone" },
+	];
+	assert.deepEqual(skillChanges(saves), { created: ["new"], updated: ["old", "redone"], deleted: ["gone"] });
+	for (const action of ["rename", "toString"]) {
+		assert.throws(() => skillChanges([{ action, name: "x" }]), new RegExp(`unknown manage_skill action "${action}"`));
+	}
+	// Names count as the store saves them, so a create and a delete that differ only in case undo each other.
+	const cased = [{ action: "create", name: " Deploy-Docs " }, { action: "create", name: "Brief" }, { action: "delete", name: "brief" }];
+	assert.deepEqual(skillChanges(cased), { created: ["deploy-docs"], updated: [], deleted: [] });
+	assert.throws(() => skillChanges([{ action: "create", name: "not a name" }]), /not a valid skill name/);
+});
+
+test("requestedSave takes the action and name of a manage_skill call that changes a skill, and nothing from any other call", () => {
+	for (const action of ["create", "update", "delete"]) {
+		assert.deepEqual(requestedSave({ action, name: "Deploy-Docs", body: "1. Do it." }), { action, name: "Deploy-Docs" });
+	}
+	const others = [{ action: "read", name: "x" }, { action: "toString", name: "x" }, { action: "create" }, { action: "create", name: 7 }, {}, null, undefined, "create"];
+	for (const input of others) {
+		assert.equal(requestedSave(input), undefined, JSON.stringify(input));
+	}
 });

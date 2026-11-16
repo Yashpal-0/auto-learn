@@ -6,11 +6,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { boundedSink, changedSkills, forkEnvironment, isDirectory } from "./capture.mjs";
-import { PLUGIN_VERSION, skillsDir } from "./config.mjs";
+import { boundedSink, forkEnvironment, isDirectory, noteToolName, requestedSave, skillChanges } from "./capture.mjs";
+import { PLUGIN_VERSION } from "./config.mjs";
 import { captureNudge } from "./prompts.mjs";
 import { findTurnEnd } from "./rollout.mjs";
-import { managedSkillVersions } from "./skills.mjs";
 import { isValidSessionId } from "./state.mjs";
 import { clip } from "./transcript.mjs";
 
@@ -23,7 +22,11 @@ const KILL_GRACE_MS = 5000;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_ERROR_CHARS = 500;
 const MAX_VALUE_CHARS = 256;
+/** The review is asked to use manage_skill alone, so a fork that calls more other tools than this has gone on with the task. */
+const MAX_OTHER_TOOL_CALLS = 3;
 const EFFORT_LEVEL = /^[a-z]+$/;
+/** The app-server items of subagent tools, multi_agent_v1's and multi_agent_v2's. */
+const SUB_AGENT_ITEMS = new Set(["collabAgentToolCall", "subAgentActivity"]);
 /** The app-server items that are tool calls; the fork's manage_skill calls are counted apart. */
 const TOOL_ITEMS = new Set([
 	"commandExecution",
@@ -71,10 +74,8 @@ export async function captureCodexTurn(job, { env = process.env, signal, reviewe
 	if (!(await isDirectory(job.projectDir))) return { outcome: "skipped", reason: "the session's project directory is gone" };
 	reviewedTurns.add(job.turnId);
 
-	const library = skillsDir(env, "codex");
-	const before = await managedSkillVersions(library);
 	const started = performance.now();
-	const result = await runCodexFork({
+	const { saves = [], ...result } = await runCodexFork({
 		threadId: job.sessionId,
 		turnId: job.turnId,
 		model: isShortText(job.model) ? job.model : undefined,
@@ -86,8 +87,7 @@ export async function captureCodexTurn(job, { env = process.env, signal, reviewe
 		pluginId,
 	});
 	const durationMs = Math.round(performance.now() - started);
-	// shortcut: a skill another session changes during the capture is counted as the capture's; read the fork's items if that misleads.
-	return { ...result, ...changedSkills(before, await managedSkillVersions(library)), durationMs };
+	return { ...result, ...skillChanges(saves), durationMs };
 }
 
 function isWellFormed(job) {
@@ -127,17 +127,28 @@ export function forkConfig(pluginId) {
  * Runs the capture fork: `codex app-server` forks the session after turn
  * `turnId` into an ephemeral thread and starts a turn on it with the capture
  * request. The fork loads the user's configuration, plugins and tools, as the
- * session did, so its request reuses the session's prompt cache. A failure
- * comes back as the record's outcome rather than an exception, so one bad
- * capture never stops the queue. The protocol was verified with Codex 0.168.
+ * session did, so its request reuses the session's prompt cache. A fork that
+ * calls more than MAX_OTHER_TOOL_CALLS tools besides manage_skill, or starts a
+ * subagent tool, is stopped. A failure comes back as the record's outcome
+ * rather than an exception, so one bad capture never stops the queue; once the
+ * fork exists, the record holds the calls, token use and saves it reported,
+ * however it ended. `saves` lists the fork's successful manage_skill calls in
+ * order, and `otherTools` names its other tools, as many as noteToolName
+ * keeps, without their arguments or output. Other tools count once Codex
+ * reports them finished, a subagent tool once it starts. The protocol was
+ * verified with Codex 0.168. The status and arguments of mcpToolCall items and
+ * the subagent items come from the Codex 0.169.0 source; a run of a 0.169.0
+ * build showed all of them but multi_agent_v2's subAgentActivity.
  *
- * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted", skillCalls?: number, otherToolCalls?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, reason?: string, error?: string}>}
+ * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted" | "stopped", skillCalls?: number, otherToolCalls?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, saves?: Array<{action: string, name: string}>, otherTools?: string[], reason?: string, error?: string}>}
  */
 export function runCodexFork({ threadId, turnId, model, effort, modelProvider, cwd, env, signal, pluginId, timeoutMs = CAPTURE_TIMEOUT_MS }) {
 	return new Promise((resolve) => {
 		const child = spawn("codex", ["app-server"], { cwd, env: codexForkEnvironment(env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 		const stderr = boundedSink(child.stderr, MAX_STDERR_BYTES);
 		const calls = { skillCalls: 0, otherToolCalls: 0 };
+		const saves = [];
+		const otherTools = new Set();
 		const usage = {};
 		const requests = new Map();
 		let lastRequestId = 0;
@@ -164,7 +175,8 @@ export function runCodexFork({ threadId, turnId, model, effort, modelProvider, c
 			clearTimeout(timer);
 			clearTimeout(killTimer);
 			signal?.removeEventListener("abort", onAbort);
-			resolve(result);
+			if (typeof forkId !== "string") resolve(result);
+			else resolve({ ...result, ...calls, ...tokenCounts(usage), saves: [...saves], otherTools: [...otherTools] });
 		};
 		child.once("error", (error) =>
 			finish({ outcome: "error", error: error.code === "ENOENT" ? "the codex CLI was not found on PATH" : error.message }),
@@ -198,10 +210,28 @@ export function runCodexFork({ threadId, turnId, model, effort, modelProvider, c
 				case "turn/started":
 					forkTurnId ??= params.turn?.id;
 					break;
+				case "item/started":
+					// A subagent runs on its own thread, so its calls, tokens and saves would escape the review's limit and log.
+					if (SUB_AGENT_ITEMS.has(params.item?.type)) {
+						calls.otherToolCalls++;
+						noteToolName(otherTools, toolName(params.item));
+						stop({ outcome: "stopped", reason: "the review tried to use a subagent" }, 0);
+					}
+					break;
 				case "item/completed": {
 					const item = params.item;
-					if (item?.type === "mcpToolCall" && item.server === MCP_SERVER && item.tool === MANAGE_SKILL) calls.skillCalls++;
-					else if (TOOL_ITEMS.has(item?.type)) calls.otherToolCalls++;
+					if (item?.type === "mcpToolCall" && item.server === MCP_SERVER && item.tool === MANAGE_SKILL) {
+						calls.skillCalls++;
+						// Codex reports a declined or failed call, and one whose result has isError, as "failed".
+						const save = item.status === "completed" ? requestedSave(item.arguments) : undefined;
+						if (save) saves.push(save);
+					} else if (TOOL_ITEMS.has(item?.type) && !SUB_AGENT_ITEMS.has(item.type)) {
+						calls.otherToolCalls++;
+						noteToolName(otherTools, toolName(item));
+						if (calls.otherToolCalls > MAX_OTHER_TOOL_CALLS) {
+							stop({ outcome: "stopped", reason: `the review called more than ${MAX_OTHER_TOOL_CALLS} tools other than ${MANAGE_SKILL}` }, 0);
+						}
+					}
 					break;
 				}
 				case "thread/tokenUsage/updated":
@@ -217,7 +247,7 @@ export function runCodexFork({ threadId, turnId, model, effort, modelProvider, c
 						turn.status === "completed"
 							? { outcome: "ok" }
 							: { outcome: "error", error: clip(turn.error?.message || `the fork's turn ended as ${turn.status}`, MAX_ERROR_CHARS) };
-					stop({ ...ending, ...calls, ...tokenCounts(usage) }, KILL_GRACE_MS);
+					stop(ending, KILL_GRACE_MS);
 					break;
 				}
 				default:
@@ -279,6 +309,14 @@ function codexForkEnvironment(env) {
 	delete result.PLUGIN_ROOT;
 	delete result.PLUGIN_DATA;
 	return result;
+}
+
+/** A tool item's name for the log: the item type, or the server or namespace and tool of an MCP or dynamic tool call. */
+function toolName(item) {
+	// Neither an MCP server's name nor a dynamic tool's namespace can hold "#", so each name reads one way.
+	if (item.type === "mcpToolCall") return `mcp:${item.server}#${item.tool}`;
+	if (item.type === "dynamicToolCall") return `dynamic:${item.namespace ? `${item.namespace}#` : ""}${item.tool}`;
+	return item.type;
 }
 
 /**

@@ -15,42 +15,54 @@ export async function readLines(file, start, end, visit) {
 	const handle = await fs.open(file, "r");
 	try {
 		const buffer = Buffer.alloc(CHUNK_BYTES);
-		let pending = [];
-		let pendingBytes = 0;
-		let isSkippingLine = false;
+		const split = lineSplitter(MAX_LINE_BYTES, visit);
 		for (let position = start; position < end; ) {
 			const { bytesRead } = await handle.read(buffer, 0, Math.min(CHUNK_BYTES, end - position), position);
 			if (bytesRead === 0) break;
 			const chunk = buffer.subarray(0, bytesRead);
-			let from = 0;
-			for (let newline = chunk.indexOf(NEWLINE); newline !== -1; newline = chunk.indexOf(NEWLINE, from)) {
-				if (!isSkippingLine) {
-					const piece = chunk.subarray(from, newline);
-					visit(pendingBytes ? Buffer.concat([...pending, piece]) : piece);
-				}
-				pending = [];
-				pendingBytes = 0;
-				isSkippingLine = false;
-				from = newline + 1;
-				next = position + from;
-			}
-			const rest = chunk.subarray(from);
-			if (!isSkippingLine && rest.length > 0) {
-				if (pendingBytes + rest.length > MAX_LINE_BYTES) {
-					isSkippingLine = true;
-					pending = [];
-					pendingBytes = 0;
-				} else {
-					pending.push(Buffer.from(rest));
-					pendingBytes += rest.length;
-				}
-			}
+			split(chunk);
+			const lastNewline = chunk.lastIndexOf(NEWLINE);
+			if (lastNewline !== -1) next = position + lastNewline + 1;
 			position += bytesRead;
 		}
 	} finally {
 		await handle.close();
 	}
 	return next;
+}
+
+/**
+ * Splits bytes into lines. Returns a function to call with each chunk in
+ * turn, which calls `visit` with each complete line, without its newline,
+ * and leaves out every line over `limit` bytes. A line may share memory with
+ * its chunk, so `visit` must not keep it; what the splitter holds of a
+ * partial line it copies, so the caller may reuse a chunk's buffer.
+ */
+export function lineSplitter(limit, visit) {
+	let pending = [];
+	let pendingBytes = 0;
+	let isSkippingLine = false;
+	return (chunk) => {
+		let from = 0;
+		for (let newline = chunk.indexOf(NEWLINE); newline !== -1; newline = chunk.indexOf(NEWLINE, from)) {
+			const piece = chunk.subarray(from, newline);
+			if (!isSkippingLine && pendingBytes + piece.length <= limit) visit(pendingBytes ? Buffer.concat([...pending, piece]) : piece);
+			pending = [];
+			pendingBytes = 0;
+			isSkippingLine = false;
+			from = newline + 1;
+		}
+		const rest = chunk.subarray(from);
+		if (isSkippingLine || rest.length === 0) return;
+		if (pendingBytes + rest.length > limit) {
+			isSkippingLine = true;
+			pending = [];
+			pendingBytes = 0;
+		} else {
+			pending.push(Buffer.from(rest));
+			pendingBytes += rest.length;
+		}
+	};
 }
 
 /** The line's JSON value, or undefined when the line is not valid JSON. */

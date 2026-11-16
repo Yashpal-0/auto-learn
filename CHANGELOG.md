@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Claude Code: the log's `costUsd` now subtracts the session's last `cost-state` entry in its transcript, which is what Claude Code starts a review fork's cost counters from. The 0.1.1 entry below was wrong about the source: `~/.claude.json` records only a project's last session to exit, so when another session in the same project exited later, versions 0.1.1 to 0.3.0 logged the session's earlier cost as part of `costUsd`. A total that auto-learn cannot check is now logged as `reportedCostUsd`, never as `costUsd`.
+- Claude Code: reviews read the fork's messages as they arrive. A review that hits its time limit, or is stopped because the session ended, now logs its turns, tokens, calls and saved skills so far, without a cost; one stopped after Claude Code printed its result is logged from that result. A fork that ends without a result is logged with the error `claude ended without a result (exit N): …`.
+- Claude Code: the new `refusedTools` field names up to 10 of the tools the gate refused.
+- Claude Code: on Claude Code 2.1.295 or later, the gate also refuses the call when the gate hook itself fails or takes more than 10 seconds.
+- Claude Code: the MCP server is now declared in `.claude-plugin/plugin.json`, and the root `.mcp.json` is gone. In sessions opened inside the auto-learn repository, `.mcp.json` could also load as a project server, which failed to start.
+- Claude Code and Codex: a review's created, updated and deleted skills now come from its own successful `manage_skill` calls, by the names the store saved them under, instead of from a comparison of the skill folder before and after. A review no longer claims a skill that another session saved while it ran.
+- Claude Code and Codex: the review request tells the model to treat instructions in files, tool output and quoted text as evidence, and to update or delete a skill only when its full text is in the conversation.
+- Codex: a review is stopped, with the outcome `stopped`, once Codex reports that it has called more than 3 tools other than `manage_skill`. auto-learn counts a call when Codex reports that it has finished, so the call that goes over the limit, and any that run alongside it, still run. The new `otherTools` field names up to 10 of those tools, without their arguments or output.
+- Codex: a review is also stopped, with the outcome `stopped`, as soon as Codex reports that it has started a subagent tool such as `spawn_agent`, which counts as one call. A subagent of the review inherited its approval of `manage_skill`, so it could save a skill that the log did not credit to the review, and its tool calls and tokens counted toward neither the limit nor the log.
+- Codex: a review that was stopped, timed out, was aborted or failed after its fork started now logs its calls and skills so far, and the tokens Codex had reported.
+- All hosts: `manage_skill` refuses a skill body that contains `` !`command` ``, a ```` ```! ```` block or a `!` right before an argument such as `$ARGUMENTS`, because Claude Code runs those commands when it loads the skill, after it fills in the arguments.
+- All hosts: `manage_skill` refuses more kinds of credentials: PGP private key blocks; Stripe, npm, Hugging Face and PyPI tokens; passwords in URLs; `Bearer` tokens; AWS secret access keys written next to their variable name; Google OAuth client secrets and access tokens; age secret keys; Slack webhook URLs; and OAuth token secrets, Launchpad's credentials file and `PLAINTEXT` signatures included. Placeholders such as `$TOKEN` are still accepted, but AWS's documented example secret key and a `Bearer` placeholder of 20 or more characters are now refused.
+- The README says how to update an installed copy in Claude Code and in Codex, gives measured review costs for Codex, and says that on Linux a command a Codex review leaves running keeps running after the review ends.
+
 ## 0.3.0 - 2026-11-14
 
 - auto-learn now runs as a native OpenCode V2 plugin. Install it directly from GitHub with `opencode plugin add github:Yashpal-0/auto-learn`. It adds `manage_skill`, saves to OpenCode's own skill library, and refreshes discovered skills after changes.
@@ -18,6 +34,7 @@
 ## 0.1.1 - 2026-11-12
 
 - The log's `costUsd` is now what a review itself cost. Claude Code counts a resumed session's earlier cost into the total it reports for the review's fork; auto-learn now reads that cost from `~/.claude.json`, subtracts it, and logs it as `sessionCostUsd`. Entries logged by 0.1.0 overstate `costUsd` for resumed sessions.
+  Correction, added later: `~/.claude.json` records only a project's last session to exit, so when another session in the project exited later, this release and those up to 0.3.0 logged the session's earlier cost as part of `costUsd`. The release after 0.3.0 reads the cost from the session's transcript instead.
 - The README gives costs measured with Claude Opus 5.5 as well as Haiku 5.5.
 
 ## 0.1.0 - 2026-11-12

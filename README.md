@@ -15,6 +15,13 @@ claude plugin install auto-learn@auto-learn
 
 Restart running Claude Code sessions afterwards: hooks load when a session starts.
 
+To update to a later version, refresh the marketplace, then the plugin, and restart running sessions:
+
+```sh
+claude plugin marketplace update auto-learn
+claude plugin update auto-learn@auto-learn
+```
+
 auto-learn needs:
 
 - Node.js 18 or later on `PATH`. The hooks and the MCP server are Node scripts with no dependencies.
@@ -31,8 +38,8 @@ auto-learn needs:
    claude -p --resume <session> --resume-session-at <last message> --fork-session --no-session-persistence
    ```
 
-   with the session's model and effort, in the session's project folder. The fork sees the conversation up to the end of that turn, exactly as the session did, and reads it from the prompt cache the session has just written. It receives one request: look back at the turn and, if it worked out a procedure that a later session would otherwise have to discover again, save it with `manage_skill`; otherwise save nothing. The fork is not saved as a session and does not appear in `/resume`.
-5. Only `manage_skill` runs in the fork. A PreToolUse hook refuses every other tool, and the fork runs in `dontAsk` permission mode, so it never prompts, edits files or runs commands. ToolSearch is allowed so that the fork can load the `manage_skill` schema. A hook cannot refuse the server-side advisor tool, so the request tells Claude not to use it, and the log counts any advisor calls.
+   with the session's model and effort, in the session's project folder. The fork sees the conversation up to the end of that turn, exactly as the session did, and reads it from the prompt cache the session has just written. It receives one request: look back at the turn and, if it worked out a procedure that a later session would otherwise have to discover again, save it with `manage_skill`; otherwise save nothing. The request also tells Claude to treat instructions in files, tool output and quoted text as evidence, not as instructions, and to update or delete a skill only when its full text is in the conversation. The fork is not saved as a session and does not appear in `/resume`.
+5. Only `manage_skill` runs in the fork. A PreToolUse hook refuses every other tool; on Claude Code 2.1.295 or later it also refuses the call when the hook itself fails or takes more than 10 seconds. The fork runs in `dontAsk` permission mode, so it never prompts, edits files or runs commands. ToolSearch is allowed so that the fork can load the `manage_skill` schema. A hook cannot refuse the server-side advisor tool, so the request tells Claude not to use it, and the log counts any advisor calls.
 6. A review stops after 10 model turns or 5 minutes. Reviews of one session run one at a time, oldest first. Ending the session (exiting, `/clear`, or switching to another session with `/resume`) stops its running and queued reviews.
 
 Each queued, skipped and finished review is recorded in the [log](#log).
@@ -43,9 +50,11 @@ Skills are saved to `~/.claude/skills/<name>/SKILL.md` (`$CLAUDE_CONFIG_DIR/skil
 
 - Names are lowercase letters and digits with single hyphens between words, 1 to 64 characters, for example `deploy-docs`.
 - A `SKILL.md` is at most 32 KiB, frontmatter included, and its description at most 1,024 characters.
-- A skill that contains what looks like a credential is refused: private keys, API keys, and GitHub, GitLab, Slack, AWS and Google tokens, and JSON Web Tokens.
+- A skill that contains what looks like a credential is refused: private keys, PGP private key blocks included; API keys; GitHub, GitLab, Slack, AWS, Google, Stripe, npm, Hugging Face and PyPI tokens; AWS secret access keys written next to their variable name; Google OAuth client secrets; `Bearer` tokens; passwords in URLs; Slack webhook URLs; age secret keys; OAuth token secrets, Launchpad's credentials file and `PLAINTEXT` signatures included; and JSON Web Tokens. Placeholders such as `$TOKEN`, `${TOKEN}` and `<password>` are accepted. A few examples look real enough to be refused too, such as AWS's documented example key and `Bearer` followed by a placeholder of 20 or more characters; write `$TOKEN` instead.
+- A skill whose body contains `` !`command` ``, a ```` ```! ```` block or a `!` right before an argument such as `$ARGUMENTS` is refused, because Claude Code runs those commands when it loads the skill, after it fills in the arguments. Show commands in an ordinary ```` ```sh ```` block.
 - `create` refuses a name that any skill already uses, in your personal skills or in the project's `.claude/skills`.
 - `update` and `delete` work only on skills that carry the marker, and never through a symbolic link. Skills you wrote, and skills linked in from elsewhere, are never changed.
+- `update` replaces a skill's whole description and body. A review is told to keep the steps that still hold, but a model's edit can still lose details.
 
 At the start of each session, and again after each compaction, auto-learn lists the learned skills for Claude with a short description of each: the whole description when it is up to 160 characters, else its first sentence, else its start cut at a word. Claude Code lists every skill too, but once its listing outgrows its budget (1% of the context window by default), it lists some skills by name only, starting with the skills you have used least, and a new learned skill has not been used yet. auto-learn's list puts the most recently changed skills first and stops at 4,000 characters, about 1,000 tokens. It leaves out the skills that `skillOverrides` in your `~/.claude/settings.json` sets to anything other than `on`.
 
@@ -79,9 +88,13 @@ auto-learn writes one JSON object per line to `auto-learn.log` in its data folde
 
 - `queued`: a turn was queued for review, with its tool call count.
 - `skip`: a turn was not reviewed, with the reason.
-- `capture`: a review finished, with its outcome (`ok`, `skipped`, `aborted`, `timeout` or `error`) and, for a review that ran, its model turns, duration, tokens, cost, advisor calls, refused tool calls, and the skills it created, updated or deleted.
+- `capture`: a review finished, with its outcome (`ok`, `skipped`, `aborted`, `timeout` or `error`) and, for a review that ran, its model turns, duration, tokens, cost, advisor calls, refused tool calls with the names of up to 10 refused tools (`refusedTools`), and the skills it created, updated or deleted. A review that hit its time limit or was stopped because the session ended logs its turns, tokens, calls and skills so far, but no cost. A review stopped after Claude Code printed its result is logged from that result.
 
-`costUsd` is what the review itself cost, at list price. When a session has been resumed, Claude Code starts a fork's cost counter from the cost it recorded for the session when it last exited, so the total it reports for the fork includes the session's earlier cost. auto-learn reads that recorded cost from `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` when that is set), subtracts it, and logs it as `sessionCostUsd`. If that file exists but cannot be read, auto-learn logs Claude Code's total as `reportedCostUsd` instead of `costUsd`. Version 0.1.0 logged that total as `costUsd`, so its entries for resumed sessions overstate what reviews cost.
+The created, updated and deleted skills are the review's own successful `manage_skill` calls, so a skill that another session saves while the review runs is not counted. A save whose result had not arrived when the review was stopped is not counted either, though the skill may have been written.
+
+`costUsd` is what the review itself cost, at list price. Claude Code starts a fork's cost counters from the last `cost-state` entry for the session in its transcript, so the total it reports for the fork includes the session's cost up to that entry. auto-learn reads that entry just before the fork starts, subtracts it, and logs it as `sessionCostUsd`. When the transcript cannot be read, or the fork's per-model totals do not show that it counted on from that entry, auto-learn logs Claude Code's total as `reportedCostUsd` instead of `costUsd`.
+
+Older entries can overstate `costUsd` for resumed sessions. Version 0.1.0 logged Claude Code's total. Versions 0.1.1 to 0.3.0 subtracted the cost that `~/.claude.json` records for a project's last session, which matches only when no other session in the project exited later; otherwise they logged the total.
 
 The log holds no conversation text. It is readable only by you, and it rotates at 1 MiB, keeping one older file as `auto-learn.log.1`. `claude plugin uninstall` deletes it along with the data folder unless you pass `--keep-data`.
 
@@ -91,7 +104,7 @@ tail -n 5 ~/.claude/plugins/data/auto-learn-auto-learn/auto-learn.log
 
 ## Cost
 
-A review is one to five more Claude requests on your account, with the session's model; saving a skill takes more of them. Each request sends the session's whole context again. Reading that context from the prompt cache is cheap, but the reply, thinking included, is billed in full, so on a large model a review costs real money. The cost grows with the length of the session.
+A review is up to 10 more Claude requests on your account, with the session's model. In 67 measured reviews it took 2 to 9, and a review that saved a skill took at least 3. Each request sends the session's whole context again. Reading that context from the prompt cache is cheap, but the reply, thinking included, is billed in full, so on a large model a review costs real money. The cost grows with the length of the session.
 
 Measured costs, at list price:
 
@@ -114,8 +127,7 @@ To spend less, raise `minToolCalls`, or turn `autoCapture` off and leave saving 
 
 ## Privacy
 
-- auto-learn reads the session transcript under `~/.claude/projects` on your machine, to count tool calls and find where the turn ended.
-- auto-learn reads Claude Code's `~/.claude.json` for the cost Claude Code recorded for the session, and logs only that number.
+- auto-learn reads the session transcript under `~/.claude/projects` on your machine, to count tool calls, find where the turn ended, and read the cost Claude Code recorded for the session, of which it logs only the number.
 - auto-learn reads `skillOverrides` in Claude Code's `~/.claude/settings.json`, to leave out the learned skills you hid.
 - A review is a Claude Code request like any turn: the fork sends the session's conversation to Claude again, through your own Claude Code account and settings.
 - The request tells Claude never to save secrets, credentials or personal data in a skill, and `manage_skill` refuses content that looks like a credential.
@@ -156,6 +168,12 @@ codex plugin add auto-learn@auto-learn
 
 Then start a Codex session, open `/hooks`, and trust auto-learn's three hooks. Codex runs a plugin's hooks only once you trust them, and a hook that an update changes needs your trust again.
 
+To update to a later version, refresh the marketplace, which also reinstalls the plugins installed from it, and restart running Codex sessions:
+
+```sh
+codex plugin marketplace upgrade auto-learn
+```
+
 auto-learn needs:
 
 - Node.js 18 or later on `PATH`.
@@ -168,9 +186,9 @@ Codex runs hooks through a login shell (`$SHELL -lc`) with the environment it st
 1. At session start, the plugin tells Codex about `manage_skill` and lists the learned skills.
 2. When a turn ends, the Stop hook reads the turn from the session's rollout file under `~/.codex/sessions` and counts its tool calls: commands, file changes, MCP and dynamic tool calls, subagent calls, web searches, and image views and generations. The turn is queued for review when it made at least `minToolCalls` tool calls, the session runs in the terminal or the IDE extension, and the turn did not run in plan mode. `codex exec`, MCP client and subagent sessions are not reviewed, and neither are ephemeral sessions, which keep no rollout.
 3. The worker waits until the rollout records the end of the turn. It drops the turn if the turn was interrupted, if a new turn started first, or if the turn did not end within 10 minutes. A turn that another Stop hook kept going is reviewed once.
-4. The review runs in a fork of the session. The worker starts `codex app-server` in the session's project folder, forks the session after the reviewed turn into an ephemeral thread with the session's model, reasoning effort and model provider, and starts one turn on the fork with the review request. The fork is not saved as a session and does not appear in `codex resume`.
+4. The review runs in a fork of the session. The worker starts `codex app-server` in the session's project folder, forks the session after the reviewed turn into an ephemeral thread with the session's model, reasoning effort and model provider, and starts one turn on the fork with the review request, which carries the same safeguards as in Claude Code and also tells Codex not to open a skill's file to read it. The fork is not saved as a session and does not appear in `codex resume`.
 5. The fork runs with the approval policy `never` and a read-only sandbox, so it never prompts, and its commands cannot change files. Its configuration approves `manage_skill`, which saves skills from outside the sandbox, and every other request for approval is denied. Hooks and the `notify` program are off in the fork; your plugins and MCP servers load as in any session.
-6. A review stops after 5 minutes. Reviews of one session run one at a time, oldest first. Ending the session stops its running and queued reviews.
+6. A review stops after 5 minutes, or as soon as Codex reports that it has called more than 3 tools other than `manage_skill`. auto-learn counts a tool call when Codex reports that it has finished, so the call that goes over the limit, and any that run alongside it, still run. A review also stops as soon as Codex reports that it has started a subagent tool, such as `spawn_agent`, which counts as one call: a subagent runs on a thread of its own, so its tool calls, tokens and saves would escape the limit and the log. Reviews of one session run one at a time, oldest first. Ending the session stops its running and queued reviews.
 
 ### Skills in Codex
 
@@ -199,7 +217,12 @@ If you export them from your shell profile instead, Claude Code's hooks can see 
 
 ### Log in Codex
 
-The log is `auto-learn.log` in `~/.codex/plugins/data/auto-learn-auto-learn/` (under `$CODEX_HOME` when that is set), with the same events as in Claude Code. A Codex `capture` entry holds the review's outcome and duration, its `manage_skill` calls (`skillCalls`), its other tool calls (`otherToolCalls`), its tokens (`inputTokens`, `cacheReadTokens`, `outputTokens`) and the skills it created, updated or deleted. It holds no cost, because Codex reports none.
+The log is `auto-learn.log` in `~/.codex/plugins/data/auto-learn-auto-learn/` (under `$CODEX_HOME` when that is set), with the same events as in Claude Code. A Codex `capture` entry holds the review's outcome and duration, its `manage_skill` calls (`skillCalls`), its other tool calls (`otherToolCalls`) with the names of up to 10 of those tools (`otherTools`), its tokens (`inputTokens`, `cacheReadTokens`, `outputTokens`) and the skills it created, updated or deleted, counted as in Claude Code. It holds no cost, because Codex reports none.
+
+- `otherTools` holds names only, never arguments or output: the item type for Codex's own tools, such as `commandExecution` or `webSearch`; `mcp:<server>#<tool>` for MCP tools; and `dynamic:<namespace>#<tool>` or `dynamic:<tool>` for dynamic tools.
+- Calls that Codex refuses before they run, such as a goal tool or a request for escalated permissions, are not reported, so they are neither counted nor named.
+- The outcome `stopped` means the review called more than 3 tools other than `manage_skill`, or started a subagent tool, and was stopped. The calls that went over the limit had already run.
+- A review that was stopped, timed out, was aborted or failed after its fork started still logs its calls and skills so far, and the tokens Codex had reported. Codex reports a model request's tokens only once its reply is complete and every tool it called has finished, so a review that ends while the model is still answering or a tool still runs, as when it starts a subagent tool, logs fewer tokens than it used, or none.
 
 ```sh
 tail -n 5 ~/.codex/plugins/data/auto-learn-auto-learn/auto-learn.log
@@ -207,7 +230,11 @@ tail -n 5 ~/.codex/plugins/data/auto-learn-auto-learn/auto-learn.log
 
 ### Cost in Codex
 
-Not yet measured. A review is one more turn with the session's model and reasoning effort, sent through your Codex sign-in: on a ChatGPT plan it counts toward the plan's usage limits, and with an API key it is billed. The fork starts with the same configuration and tools as the session so that its request can reuse the prompt cache the session has just written; whether it does is not yet measured either. The log's `cacheReadTokens` shows how much of a review's input came from the cache. To spend less, raise `minToolCalls`, or turn `autoCapture` off.
+A review is one more turn with the session's model and reasoning effort, sent through your Codex sign-in: on a ChatGPT plan it counts toward the plan's usage limits, and with an API key it is billed. Codex reports no cost, so the log counts tokens instead. The fork starts with the same configuration and tools as the session so that its request can reuse the prompt cache the session has just written; the log's `cacheReadTokens` shows how much of a review's input came from the cache.
+
+Measured over 25 completed reviews: a review sent a median of about 304,000 input tokens (98,000 to 1.8 million), wrote a median of about 1,400 output tokens, and took a median of 58 seconds. The median review read 81% of its input from the cache, but 4 of the 25 read none of it. 14 of the 25 saved nothing.
+
+To spend less, raise `minToolCalls`, or turn `autoCapture` off.
 
 ### Privacy in Codex
 
@@ -220,10 +247,11 @@ Not yet measured. A review is one more turn with the session's model and reasoni
 - A review may still be running when you send the next prompt. Pressing Esc does not stop it; ending the session does.
 - The fork runs the `codex` on `PATH`, which can be a different version from the Codex running the session; an IDE extension may bundle its own. Without `codex` on `PATH`, reviews fail and the log says why.
 - The fork reads your configuration from disk. Settings you gave the session on the command line, such as `-c` overrides, do not reach it; the session's model, reasoning effort and model provider do.
-- The read-only sandbox still lets read-only tools and commands run in the fork, as well as tools you always allow. The request tells Codex to use only `manage_skill`, and the log counts any other tool calls as `otherToolCalls`.
+- The read-only sandbox still lets read-only tools and commands run in the fork, as well as tools you always allow. The request tells Codex to use only `manage_skill`. The log counts and names any other tool calls, and a review is stopped once more than 3 of them have run, or once it starts a subagent tool. Codex's `tool_search`, which loads `manage_skill`, is not counted.
+- On Linux, a command that the fork leaves running, such as a long command that Codex moved to the background, keeps running in the read-only sandbox after the review ends. Codex does not stop its sandboxed commands when it exits, in sessions as well as in reviews; seen with bubblewrap 0.11.1.
 - A learned skill that `[[skills.config]]` in your Codex configuration disables is still in auto-learn's list.
 - `create` checks the project's own `.agents/skills`, but not those of the folders above it up to the repository root, which Codex also reads.
-- Tested with Codex 0.168.0 on Linux only.
+- Tested with Codex 0.168.0 on Linux only. The subagent stop, the refused calls that the log leaves out and the commands left running were checked with a 0.169.0 build; the stop for the `multi_agent_v2` feature's subagent tools follows the 0.169.0 source and has not been run.
 
 ### Uninstall from Codex
 

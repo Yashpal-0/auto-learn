@@ -3,9 +3,9 @@
 // the turn taught as a skill, with every tool but manage_skill refused.
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import { claudeGlobalConfigFile, skillsDir } from "./config.mjs";
+import { lineSplitter, parseLine, readLines } from "./jsonl.mjs";
 import { captureNudge } from "./prompts.mjs";
-import { managedSkillVersions } from "./skills.mjs";
+import { parseName } from "./skills.mjs";
 import { acquireLock, hasJob, takeJob } from "./state.mjs";
 import { clip, findForkPoint } from "./transcript.mjs";
 
@@ -15,11 +15,18 @@ export const MANAGE_SKILL_TOOL = "mcp__plugin_auto-learn_auto-learn__manage_skil
 const ALLOWED_TOOLS = [MANAGE_SKILL_TOOL, "ToolSearch"];
 // It is echoed between single quotes, so it must not contain one.
 const REFUSAL = "Only manage_skill can run during an automatic skill review; nothing was run.";
-/** Settings for the fork: a PreToolUse hook that refuses every other tool, even ones the user's settings allow. */
+/**
+ * Settings for the fork: a PreToolUse hook that refuses every other tool, even
+ * ones the user's settings allow, and still refuses when the hook itself fails
+ * or times out ("onFailure" needs Claude Code 2.1.295 or later).
+ */
 export const GATE_SETTINGS = JSON.stringify({
 	hooks: {
 		PreToolUse: [
-			{ matcher: `^(?!(${ALLOWED_TOOLS.join("|")})$).*$`, hooks: [{ type: "command", command: `echo '${REFUSAL}' >&2; exit 2` }] },
+			{
+				matcher: `^(?!(${ALLOWED_TOOLS.join("|")})$).*$`,
+				hooks: [{ type: "command", command: `echo '${REFUSAL}' >&2; exit 2`, timeout: 10, onFailure: "block" }],
+			},
 		],
 	},
 });
@@ -51,8 +58,16 @@ const PARENT_SESSION_VARIABLES = new Set([
 const CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
 const KILL_GRACE_MS = 5000;
 const MAX_TURNS = 10;
-const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
+const MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
+const MAX_LOGGED_TOOL_NAMES = 10;
+const MAX_LOGGED_TOOL_NAME_CHARS = 256;
+/** For each manage_skill action that changes a skill: what it leaves a skill's change as, given what the review's earlier calls left. */
+const SAVE_CHANGES = {
+	create: (earlier) => (earlier === "deleted" ? "updated" : "created"),
+	update: (earlier) => (earlier === "created" ? "created" : "updated"),
+	delete: (earlier) => (earlier === "created" ? undefined : "deleted"),
+};
 const MAX_ERROR_CHARS = 500;
 const MAX_ARGUMENT_CHARS = 256;
 const EFFORT_LEVEL = /^[a-z]+$/;
@@ -94,11 +109,10 @@ export async function captureTurn(job, { env = process.env, signal } = {}) {
 	if (!isSafeArgument(forkPoint.uuid)) return { outcome: "skipped", reason: "the turn's last entry has an unusable id" };
 	if (!(await isDirectory(job.projectDir))) return { outcome: "skipped", reason: "the session's project directory is gone" };
 
-	const library = skillsDir(env);
-	const before = await managedSkillVersions(library);
 	const started = performance.now();
-	const result = await runFork({
+	const { saves, ...record } = await runFork({
 		sessionId: job.sessionId,
+		transcriptPath: job.transcriptPath,
 		forkAt: forkPoint.uuid,
 		model: isSafeArgument(forkPoint.model) ? forkPoint.model : undefined,
 		effort: typeof job.effort === "string" && EFFORT_LEVEL.test(job.effort) ? job.effort : undefined,
@@ -107,8 +121,7 @@ export async function captureTurn(job, { env = process.env, signal } = {}) {
 		signal,
 	});
 	const durationMs = Math.round(performance.now() - started);
-	// shortcut: a skill another session changes during the capture is counted as the capture's; read the fork's tool results if that misleads.
-	return { ...result, ...changedSkills(before, await managedSkillVersions(library)), durationMs };
+	return { ...record, ...skillChanges(saves), durationMs };
 }
 
 function isWellFormed(job) {
@@ -139,16 +152,36 @@ export async function isDirectory(target) {
 	}
 }
 
-/** The managed skills created, updated and deleted between two managedSkillVersions readings. */
-export function changedSkills(before, after) {
-	const created = [];
-	const updated = [];
-	for (const [name, version] of after) {
-		if (!before.has(name)) created.push(name);
-		else if (before.get(name) !== version) updated.push(name);
+/**
+ * The {action, name} of a manage_skill call that changes a skill, from the
+ * call's input, or undefined for a call that changes none or that a later
+ * store may support.
+ *
+ * @returns {{action: "create" | "update" | "delete", name: string} | undefined}
+ */
+export function requestedSave(input) {
+	return Object.hasOwn(SAVE_CHANGES, input?.action) && typeof input.name === "string" ? { action: input.action, name: input.name } : undefined;
+}
+
+/**
+ * The managed skills a review created, updated and deleted, from its own
+ * successful manage_skill calls in the order they ran, by the names the store
+ * saved them under. A skill created and deleted again in one review is left
+ * out; one deleted and created again counts as updated.
+ *
+ * @param {Array<{action: "create" | "update" | "delete", name: string}>} saves requestedSave values of the calls that succeeded.
+ */
+export function skillChanges(saves) {
+	const changes = new Map();
+	for (const { action, name: rawName } of saves) {
+		if (!Object.hasOwn(SAVE_CHANGES, action)) throw new Error(`skillChanges got the unknown manage_skill action ${JSON.stringify(action)}.`);
+		const name = parseName(rawName);
+		const change = SAVE_CHANGES[action](changes.get(name));
+		if (change === undefined) changes.delete(name);
+		else changes.set(name, change);
 	}
-	const deleted = [...before.keys()].filter((name) => !after.has(name));
-	return { created, updated, deleted };
+	const named = (kind) => [...changes].filter(([, change]) => change === kind).map(([name]) => name);
+	return { created: named("created"), updated: named("updated"), deleted: named("deleted") };
 }
 
 /**
@@ -158,11 +191,16 @@ export function changedSkills(before, after) {
  * session did, so its request reuses the session's prompt cache; the gate
  * hook refuses every tool but manage_skill and ToolSearch. A failure comes
  * back as the record's outcome rather than an exception, so one bad capture
- * never stops the queue. The flags were verified with Claude Code 2.1.322.
+ * never stops the queue. claude prints each message as it goes, so a fork
+ * stopped before its result still reports what its replies so far used and
+ * the skills it saved. `saves` holds the fork's own successful manage_skill
+ * calls, and never another session's. The flags and the init, assistant and
+ * result lines were verified with Claude Code 2.1.325; the tool_use and
+ * tool_result blocks follow the Messages API and were not seen in a live run.
  *
- * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted", turns?: number, costUsd?: number, sessionCostUsd?: number, reportedCostUsd?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, advisorCalls?: number, refusedCalls?: number, reason?: string, error?: string}>}
+ * @returns {Promise<{outcome: "ok" | "error" | "timeout" | "aborted", turns?: number, costUsd?: number, sessionCostUsd?: number, reportedCostUsd?: number, inputTokens?: number, cacheReadTokens?: number, outputTokens?: number, advisorCalls?: number, refusedCalls?: number, refusedTools?: string[], reason?: string, error?: string, saves: Array<{action: "create" | "update" | "delete", name: string}>}>}
  */
-export async function runFork({ sessionId, forkAt, model, effort, cwd, env, signal, timeoutMs = CAPTURE_TIMEOUT_MS }) {
+export async function runFork({ sessionId, transcriptPath, forkAt, model, effort, cwd, env, signal, timeoutMs = CAPTURE_TIMEOUT_MS }) {
 	const args = [
 		"-p",
 		"--resume",
@@ -172,7 +210,7 @@ export async function runFork({ sessionId, forkAt, model, effort, cwd, env, sign
 		"--fork-session",
 		"--no-session-persistence",
 		"--output-format",
-		"json",
+		"stream-json",
 		"--verbose",
 		"--permission-mode",
 		"dontAsk",
@@ -185,11 +223,20 @@ export async function runFork({ sessionId, forkAt, model, effort, cwd, env, sign
 		...(model ? ["--model", model] : []),
 		...(effort ? ["--effort", effort] : []),
 	];
-	// Read before the fork starts, since the fork starts its cost counters from what the file holds then.
-	const recorded = await recordedSessionCost(sessionId, env);
+	// Read just before the fork starts, since the fork restores its cost counters from what the transcript holds then.
+	const sessionCost = await sessionCostState(transcriptPath, sessionId);
 	return new Promise((resolve) => {
 		const child = spawn("claude", args, { cwd, env: forkEnvironment(env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-		const stdout = boundedSink(child.stdout, MAX_STDOUT_BYTES);
+		const review = { replies: new Map(), pendingSaves: new Map(), saves: [], advisorCalls: 0, refusedCalls: 0, refusedTools: new Set() };
+		let ending;
+		child.stdout.on(
+			"data",
+			lineSplitter(MAX_STDOUT_LINE_BYTES, (line) => {
+				const message = parseLine(line);
+				if (message?.type === "result") ending = resultRecord(message, sessionCost, review);
+				else foldMessage(review, message);
+			}),
+		);
 		const stderr = boundedSink(child.stderr, MAX_STDERR_BYTES);
 		let stopped;
 		let killTimer;
@@ -208,12 +255,19 @@ export async function runFork({ sessionId, forkAt, model, effort, cwd, env, sign
 			clearTimeout(timer);
 			clearTimeout(killTimer);
 			signal?.removeEventListener("abort", onAbort);
-			resolve(record);
+			resolve({ ...record, saves: review.saves });
 		};
 		child.once("error", (error) =>
 			finish({ outcome: "error", error: error.code === "ENOENT" ? "the claude CLI was not found on PATH" : error.message }),
 		);
-		child.once("close", (code, exitSignal) => finish(stopped ?? resultRecord(stdout(), stderr(), code ?? exitSignal, recorded)));
+		child.once("close", (code, exitSignal) => {
+			// A result that came before the stop says how the fork ended.
+			if (ending) return finish(ending);
+			if (stopped) return finish({ ...stopped, turns: review.replies.size, ...summedTokens(review.replies), ...toolCalls(review) });
+			// stderr only: stdout holds the fork's replies, which the log must not.
+			const detail = stderr().trim().slice(-MAX_ERROR_CHARS) || "no error output";
+			finish({ outcome: "error", error: `claude ended without a result (exit ${code ?? exitSignal}): ${detail}` });
+		});
 		// claude may exit before reading the whole request; its exit status tells why.
 		child.stdin.on("error", () => {});
 		child.stdin.end(captureNudge(MANAGE_SKILL_TOOL));
@@ -241,89 +295,122 @@ export function boundedSink(stream, limit) {
 	return () => Buffer.concat(chunks).toString("utf8");
 }
 
-const NO_SESSION_COST = { costUsd: 0, modelUsage: {} };
-
 /**
- * What Claude Code recorded for the session when it last exited or switched
- * to another conversation. Claude Code 2.1.322 starts a fork that resumes the
- * session from this record, so the totals it reports for the fork include it.
- *
- * @returns {Promise<{costUsd: number, modelUsage: object} | undefined>} undefined when the record cannot be read.
+ * Takes in one message the fork printed: the usage of each reply, its advisor
+ * calls, which run on the server where no hook can refuse them, the calls the
+ * gate refused, and its manage_skill calls, which count as saves once their
+ * results show they worked. Keeps no text.
  */
-async function recordedSessionCost(sessionId, env) {
-	let config;
-	try {
-		config = JSON.parse(await fs.readFile(claudeGlobalConfigFile(env), "utf8"));
-	} catch (error) {
-		return error.code === "ENOENT" ? NO_SESSION_COST : undefined;
+function foldMessage(review, message) {
+	const content = message?.message?.content;
+	if (!Array.isArray(content)) return;
+	if (message.type === "assistant") {
+		// claude prints each content block of a reply as a message of its own, all with the reply's id and usage.
+		if (typeof message.message.id === "string") review.replies.set(message.message.id, tokenCounts(message.message.usage));
+		for (const block of content) {
+			if (block?.type === "server_tool_use" && block.name === "advisor") review.advisorCalls++;
+			if (block?.type !== "tool_use") continue;
+			if (!ALLOWED_TOOLS.includes(block.name)) {
+				review.refusedCalls++;
+				if (typeof block.name === "string") noteToolName(review.refusedTools, block.name);
+			} else if (block.name === MANAGE_SKILL_TOOL) {
+				const save = requestedSave(block.input);
+				if (save) review.pendingSaves.set(block.id, save);
+			}
+		}
+	} else if (message.type === "user") {
+		for (const block of content) {
+			const save = block?.type === "tool_result" ? review.pendingSaves.get(block.tool_use_id) : undefined;
+			if (!save) continue;
+			review.pendingSaves.delete(block.tool_use_id);
+			if (block.is_error !== true) review.saves.push(save);
+		}
 	}
-	const project = Object.values(config?.projects ?? {}).find((entry) => entry?.lastSessionId === sessionId);
-	if (!project?.lastCost) return NO_SESSION_COST;
-	const { lastCost, lastModelUsage } = project;
-	const isReadable = Number.isFinite(lastCost) && typeof lastModelUsage === "object" && Object.keys(lastModelUsage ?? {}).length > 0;
-	return isReadable ? { costUsd: lastCost, modelUsage: lastModelUsage } : undefined;
 }
 
-/**
- * The fork's own cost: claude's total less the session's recorded cost, when
- * the fork's per-model totals show that it counted on from that record.
- */
-function forkCost(result, recorded) {
-	const total = result.total_cost_usd;
-	if (typeof total !== "number") return {};
-	if (!recorded) return { reportedCostUsd: total };
-	if (recorded.costUsd > 0 && countedOnFrom(result.modelUsage, recorded.modelUsage)) {
-		return { costUsd: Math.round((total - recorded.costUsd) * 1e8) / 1e8, sessionCostUsd: recorded.costUsd };
-	}
-	return { costUsd: total };
+/** Adds `name`, clipped, to a review's set of tool names to log, unless the set already holds MAX_LOGGED_TOOL_NAMES. */
+export function noteToolName(names, name) {
+	if (names.size < MAX_LOGGED_TOOL_NAMES) names.add(clip(name, MAX_LOGGED_TOOL_NAME_CHARS));
 }
 
-function countedOnFrom(totals, recorded) {
-	return Object.entries(recorded).every(([model, usage]) => (totals?.[model]?.costUSD ?? 0) >= (usage?.costUSD ?? 0));
+function toolCalls(review) {
+	return { advisorCalls: review.advisorCalls, refusedCalls: review.refusedCalls, refusedTools: [...review.refusedTools] };
 }
 
-function resultRecord(stdout, stderr, exitStatus, recorded) {
-	let output;
-	try {
-		output = JSON.parse(stdout);
-	} catch {
-		// Handled below with the error output that explains it.
+function tokenCounts(usage) {
+	return {
+		inputTokens: (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0),
+		cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
+		outputTokens: usage?.output_tokens ?? 0,
+	};
+}
+
+function summedTokens(replies) {
+	const sum = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 };
+	for (const counts of replies.values()) {
+		for (const key of Object.keys(sum)) sum[key] += counts[key];
 	}
-	// With verbose output, claude prints the fork's messages as one array that ends with the result.
-	const messages = Array.isArray(output) ? output : [];
-	const result = Array.isArray(output) ? output.findLast((message) => message?.type === "result") : output;
-	if (result?.type !== "result") {
-		// stderr only: stdout may hold the fork's reply, which the log must not.
-		const detail = stderr.trim().slice(-MAX_ERROR_CHARS) || "no error output";
-		return { outcome: "error", error: `claude's output is not a JSON result (exit ${exitStatus}): ${detail}` };
-	}
-	const usage = result.usage ?? {};
+	return sum;
+}
+
+function resultRecord(result, sessionCost, review) {
 	const record = {
 		outcome: result.is_error ? "error" : "ok",
 		turns: result.num_turns,
-		...forkCost(result, recorded),
-		inputTokens: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
-		cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-		outputTokens: usage.output_tokens,
-		...forkToolCalls(messages),
+		...forkCost(result, sessionCost),
+		...tokenCounts(result.usage),
+		...toolCalls(review),
 	};
 	if (result.is_error) record.error = clip(errorText(result), MAX_ERROR_CHARS);
 	return record;
 }
 
-/** Counts the fork's advisor calls, which run on the server where no hook can refuse them, and its calls the gate refused. */
-function forkToolCalls(messages) {
-	let advisorCalls = 0;
-	let refusedCalls = 0;
-	for (const message of messages) {
-		const content = message?.type === "assistant" ? message.message?.content : undefined;
-		if (!Array.isArray(content)) continue;
-		for (const block of content) {
-			if (block?.type === "server_tool_use" && block.name === "advisor") advisorCalls++;
-			else if (block?.type === "tool_use" && !ALLOWED_TOOLS.includes(block.name)) refusedCalls++;
-		}
+const NO_SESSION_COST = { totalCostUSD: 0, modelUsage: {} };
+
+/**
+ * The session's last cost-state entry in its transcript. Claude Code 2.1.325
+ * restores a resumed session's cost counters from it, so the totals it
+ * reports for the fork include it.
+ *
+ * @returns {Promise<{totalCostUSD?: unknown, modelUsage?: unknown} | undefined>} undefined when the transcript cannot be read.
+ */
+async function sessionCostState(transcriptPath, sessionId) {
+	let state = NO_SESSION_COST;
+	try {
+		const { size } = await fs.stat(transcriptPath);
+		await readLines(transcriptPath, 0, size, (line) => {
+			// Parsing only the few lines that can be cost-state entries keeps a long transcript quick to read.
+			if (!line.includes("cost-state")) return;
+			const value = parseLine(line);
+			if (value?.type === "cost-state" && value.sessionId === sessionId) state = value;
+		});
+	} catch (error) {
+		// Only a failure to read the transcript; a bug should surface as the capture's error.
+		if (typeof error.code !== "string") throw error;
+		return undefined;
 	}
-	return { advisorCalls, refusedCalls };
+	return state;
+}
+
+/**
+ * The fork's own cost: claude's total less the session's cost-state entry,
+ * when the fork's per-model totals show that it counted on from that entry.
+ * A total that cannot be checked is logged as reportedCostUsd, never as the cost.
+ */
+function forkCost(result, sessionCost) {
+	const total = result.total_cost_usd;
+	if (typeof total !== "number") return {};
+	const counted = sessionCost?.totalCostUSD;
+	if (counted === 0) return { costUsd: total };
+	if (Number.isFinite(counted) && counted > 0 && countedOnFrom(result.modelUsage, sessionCost.modelUsage)) {
+		return { costUsd: Math.round((total - counted) * 1e8) / 1e8, sessionCostUsd: counted };
+	}
+	return { reportedCostUsd: total };
+}
+
+function countedOnFrom(totals, recorded) {
+	const models = Object.entries(recorded ?? {});
+	return models.length > 0 && models.every(([model, usage]) => (totals?.[model]?.costUSD ?? 0) >= (usage?.costUSD ?? 0));
 }
 
 function errorText(result) {

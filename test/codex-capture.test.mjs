@@ -14,6 +14,16 @@ const PLUGIN_ROOT = new URL("..", import.meta.url).pathname;
 const PLUGIN_ID = "auto-learn@auto-learn";
 // What Codex adds to the environment of the session's hooks.
 const HOOK_ENV = { PLUGIN_ROOT: "/plugin", PLUGIN_DATA: "/plugin-data", CLAUDE_PLUGIN_ROOT: "/plugin", CLAUDE_PLUGIN_DATA: "/plugin-data" };
+/** What the fake fork has reported by the time its turn would end: its manage_skill call and its token use. */
+const PROGRESS = {
+	skillCalls: 1,
+	otherToolCalls: 0,
+	inputTokens: 2700,
+	cacheReadTokens: 2400,
+	outputTokens: 80,
+	saves: [{ action: "create", name: "fake-skill" }],
+	otherTools: [],
+};
 
 /**
  * A temporary world: a fake codex on PATH, a skill library, a project, and a
@@ -87,7 +97,7 @@ test("runCodexFork forks the session after the turn into an ephemeral read-only 
 	const w = await world(t, "ok");
 	const env = { ...w.env, ...HOOK_ENV, CLAUDE_PLUGIN_OPTION_AUTOCAPTURE: "true" };
 	const record = await fork(w, { env, model: "gpt-test", effort: "high", modelProvider: "openai" });
-	assert.deepEqual(record, { outcome: "ok", skillCalls: 1, otherToolCalls: 0, inputTokens: 2700, cacheReadTokens: 2400, outputTokens: 80 });
+	assert.deepEqual(record, { outcome: "ok", ...PROGRESS });
 
 	const { args, cwd, env: forkEnv } = await w.recorded();
 	assert.deepEqual(args, ["app-server"]);
@@ -125,10 +135,44 @@ test("runCodexFork leaves the model, provider and effort to Codex when the sessi
 	assert.equal("effort" in params["turn/start"], false);
 });
 
-test("runCodexFork counts the fork's other tool calls apart from manage_skill, and only the fork's", async (t) => {
+test("runCodexFork counts and names the fork's other tool calls apart from manage_skill, and only the fork's", async (t) => {
 	const w = await world(t, "tools");
-	const { skillCalls, otherToolCalls } = await fork(w);
-	assert.deepEqual({ skillCalls, otherToolCalls }, { skillCalls: 1, otherToolCalls: 3 });
+	const { outcome, skillCalls, otherToolCalls, otherTools } = await fork(w);
+	assert.deepEqual(
+		{ outcome, skillCalls, otherToolCalls, otherTools },
+		{ outcome: "ok", skillCalls: 1, otherToolCalls: 3, otherTools: ["commandExecution", "webSearch", "mcp:github#search_code"] },
+	);
+});
+
+test("runCodexFork stops a review that calls more than 3 other tools, keeping what it reported, and logs no tool's arguments or output", async (t) => {
+	const record = await fork(await world(t, "explore"), { timeoutMs: 10_000 });
+	assert.deepEqual(record, {
+		...PROGRESS,
+		outcome: "stopped",
+		reason: "the review called more than 3 tools other than manage_skill",
+		otherToolCalls: 4,
+		otherTools: ["commandExecution", "dynamic:ide#open_file", "dynamic:lookup"],
+	});
+	assert.doesNotMatch(JSON.stringify(record), /hunter2|credentials|README/);
+
+	const burst = await fork(await world(t, "burst"), { timeoutMs: 10_000 });
+	assert.equal(burst.outcome, "stopped");
+	assert.equal(burst.otherToolCalls, 12, "calls already made still count");
+	assert.deepEqual(
+		burst.otherTools,
+		Array.from({ length: 10 }, (_, i) => `mcp:github#tool_${i + 1}`),
+	);
+});
+
+test("runCodexFork stops a review once it starts a subagent tool, as a subagent's calls, tokens and saves would escape the review's limit and log", async (t) => {
+	// multi_agent_v1 reports the start alone; multi_agent_v2 reports the start and the end together, which counts once.
+	const stopped = { ...PROGRESS, outcome: "stopped", reason: "the review tried to use a subagent", otherToolCalls: 1 };
+	const v1 = await fork(await world(t, "spawn-v1"), { timeoutMs: 10_000 });
+	assert.deepEqual(v1, { ...stopped, otherTools: ["collabAgentToolCall"] });
+
+	const v2 = await fork(await world(t, "spawn-v2"), { timeoutMs: 10_000 });
+	assert.deepEqual(v2, { ...stopped, otherTools: ["subAgentActivity"] });
+	assert.doesNotMatch(JSON.stringify([v1, v2]), /hunter2/);
 });
 
 test("runCodexFork declines a request from the app-server and the review goes on", async (t) => {
@@ -146,15 +190,7 @@ test("a refused fork, a failed turn, and a failing, missing or hung codex are re
 		error: "codex app-server refused thread/fork: no rollout found for thread id s1",
 	});
 
-	assert.deepEqual(await fork(await world(t, "turn-fail")), {
-		outcome: "error",
-		error: "You've hit your usage limit.",
-		skillCalls: 1,
-		otherToolCalls: 0,
-		inputTokens: 2700,
-		cacheReadTokens: 2400,
-		outputTokens: 80,
-	});
+	assert.deepEqual(await fork(await world(t, "turn-fail")), { outcome: "error", error: "You've hit your usage limit.", ...PROGRESS });
 
 	assert.deepEqual(await fork(await world(t, "exit")), {
 		outcome: "error",
@@ -167,16 +203,16 @@ test("a refused fork, a failed turn, and a failing, missing or hung codex are re
 		error: "the codex CLI was not found on PATH",
 	});
 
-	assert.deepEqual(await fork(await world(t, "hang"), { timeoutMs: 300 }), { outcome: "timeout" });
+	assert.equal((await fork(await world(t, "hang"), { timeoutMs: 300 })).outcome, "timeout");
 });
 
-test("runCodexFork stops the fork when aborted, and says why", async (t) => {
+test("runCodexFork stops the fork when aborted, says why, and keeps what the fork reported", async (t) => {
 	const w = await world(t, "hang");
 	const controller = new AbortController();
 	const pending = fork(w, { signal: controller.signal, timeoutMs: 30_000 });
-	await waitForFile(w.record);
+	await waitForFile(`${w.record}.hung`);
 	controller.abort("the session ended");
-	assert.deepEqual(await pending, { outcome: "aborted", reason: "the session ended" });
+	assert.deepEqual(await pending, { outcome: "aborted", reason: "the session ended", ...PROGRESS });
 
 	const early = await world(t, "hang");
 	assert.deepEqual(await fork(early, { signal: AbortSignal.abort("the session ended"), timeoutMs: 30_000 }), {
@@ -195,6 +231,28 @@ test("captureCodexTurn forks the session once the turn has ended and reports the
 	await fs.access(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "fake-skill", "SKILL.md"));
 	const params = (await sent(w))["thread/fork"];
 	assert.deepEqual([params.model, params.modelProvider, (await sent(w))["turn/start"].effort], ["gpt-test", "openai", "high"]);
+});
+
+test("captureCodexTurn credits the fork with its own saves only, not a skill another session saves meanwhile", async (t) => {
+	const w = await world(t, "overlap");
+	const record = await captureCodexTurn(w.job, { env: w.env, pluginId: PLUGIN_ID });
+	assert.equal(record.outcome, "ok", record.error);
+	assert.deepEqual([record.created, record.updated, record.deleted], [["fake-skill"], [], []]);
+	assert.equal("saves" in record, false, "the log names the skills, not each call");
+	await fs.access(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "other-skill", "SKILL.md"));
+});
+
+test("captureCodexTurn credits the fork with no skill for a manage_skill call that Codex declined", async (t) => {
+	const w = await world(t, "create");
+	// The fork approves manage_skill for another plugin's id, so Codex declines the call.
+	const record = await captureCodexTurn(w.job, { env: w.env, pluginId: "other@market" });
+	assert.deepEqual([record.outcome, record.skillCalls, record.created], ["ok", 1, []]);
+});
+
+test("captureCodexTurn credits the fork with no skill for a manage_skill action the store does not know, as a later store might add", async (t) => {
+	const w = await world(t, "unknown-action");
+	const record = await captureCodexTurn(w.job, { env: w.env, pluginId: PLUGIN_ID });
+	assert.deepEqual([record.outcome, record.skillCalls, record.created, record.updated, record.deleted], ["ok", 1, [], [], []]);
 });
 
 test("manage_skill in the fork checks the project of the fork's sandbox for a clashing skill", async (t) => {

@@ -34,7 +34,9 @@ test("Codex runs the hooks and the MCP server from codex/, each with --host=code
 
 test("Claude Code runs the hooks and the MCP server without a host argument", () => {
 	assert.deepEqual(hookCommands("hooks/hooks.json"), Object.entries(EVENTS).map(([event, name]) => [event, `node "\${CLAUDE_PLUGIN_ROOT}/scripts/hook.mjs" ${name}`]));
-	assert.deepEqual(readJson(".mcp.json").mcpServers["auto-learn"].args, ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"]);
+	assert.deepEqual(readJson(".claude-plugin/plugin.json").mcpServers["auto-learn"].args, ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"]);
+	// A root .mcp.json also loads as a project server in sessions opened in this repo, where ${CLAUDE_PLUGIN_ROOT} is unset.
+	assert.equal(existsSync(path.join(ROOT, ".mcp.json")), false);
 });
 
 test("every prompt has a Codex version", () => {

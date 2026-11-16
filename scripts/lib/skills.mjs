@@ -21,7 +21,7 @@ const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MISSING = new Set(["ENOENT", "ENOTDIR"]);
 
 const SECRET_PATTERNS = [
-	["a private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/],
+	["a private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/],
 	["an API key", /\bsk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}/],
 	["a GitHub token", /\b(?:gh[opsur]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/],
 	["a GitLab token", /\bglpat-[A-Za-z0-9_-]{20,}/],
@@ -29,6 +29,22 @@ const SECRET_PATTERNS = [
 	["an AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
 	["a Google API key", /\bAIza[A-Za-z0-9_-]{35}/],
 	["a JSON Web Token", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+	["a Stripe key", /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/],
+	["an npm token", /\bnpm_[A-Za-z0-9]{36}\b/],
+	["a Hugging Face token", /\bhf_[A-Za-z0-9]{30,}/],
+	["a PyPI token", /\bpypi-AgE[A-Za-z0-9_-]{30,}/],
+	// The user may be empty, as in Redis URLs; $, < and braces mark a placeholder; the scheme's bound keeps text like a.a.a. linear to scan.
+	["a password in a URL", /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s\/:@<>]*:[^\s\/@<>${}]{3,}@/i],
+	["a bearer token", /\bBearer\s+[A-Za-z0-9._~+\/-]{20,}/],
+	["an AWS secret access key", /aws_secret_access_key["']?\s*[=:]\s*["']?[A-Za-z0-9\/+]{40}/i],
+	["a Google OAuth client secret", /\bGOCSPX-[A-Za-z0-9_-]{20,}/],
+	["a Google OAuth access token", /\bya29\.[A-Za-z0-9_-]{20,}/],
+	["an age secret key", /AGE-SECRET-KEY-1[A-Z0-9]{50,}/],
+	["a Slack webhook URL", /hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}/],
+	["an OAuth token secret", /oauth_token_secret=[A-Za-z0-9]{20,}/],
+	["an OAuth token secret", /access_secret["']?\s*[=:]\s*["']?[A-Za-z0-9]{40,}/],
+	// A PLAINTEXT signature is the consumer secret, &, then the token secret; Launchpad's consumer secret is empty.
+	["an OAuth token secret", /oauth_signature="?(?:&|%26)[A-Za-z0-9]{40,}/],
 ];
 
 /**
@@ -49,7 +65,8 @@ export async function manageSkill(args, context) {
 	return action === "create" ? createSkill(name, content, context) : updateSkill(name, content, context);
 }
 
-function parseName(raw) {
+/** The name `raw` gives a skill, as the store saves it. Throws when it is not a valid skill name. */
+export function parseName(raw) {
 	const text = String(raw ?? "");
 	const name = text.trim().toLowerCase();
 	if (name.length > MAX_NAME_CHARS || !NAME_PATTERN.test(name)) {
@@ -79,6 +96,13 @@ function renderSkill(name, action, rawDescription, rawBody) {
 	if (!body) throw new Error("body must not be empty.");
 	if (/^---[ \t]*\r?\n/.test(body)) {
 		throw new Error("body must not start with a frontmatter block (---): the tool writes it from name and description.");
+	}
+	// Claude Code fills in arguments before it runs these, so an unclosed !` or ```!, or a ! before $ARGUMENTS, could still become a command.
+	if (/(?<=^|\s)!(?=`|\$)/m.test(body) || body.includes("```!")) {
+		throw new Error(
+			"body must not contain !`command`, ```! blocks or !$ARGUMENTS: Claude Code runs them as shell commands when the skill loads. " +
+				"Show commands in an ordinary ```sh block, without the leading !.",
+		);
 	}
 	const content = `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
 	const bytes = Buffer.byteLength(content, "utf8");
@@ -190,9 +214,9 @@ async function canonicalPath(target) {
 	}
 }
 
-async function lstatIfPresent(target, options) {
+async function lstatIfPresent(target) {
 	try {
-		return await fs.lstat(target, options);
+		return await fs.lstat(target);
 	} catch (error) {
 		if (MISSING.has(error.code)) return undefined;
 		throw error;
@@ -205,18 +229,6 @@ async function entryType(target) {
 	if (stats.isSymbolicLink()) return "symlink";
 	if (stats.isDirectory()) return "directory";
 	return stats.isFile() ? "file" : "other";
-}
-
-/** A version stamp for each managed skill, to tell which skills a capture created, updated or deleted. */
-export async function managedSkillVersions(skillsDir) {
-	const versions = new Map();
-	for (const name of await skillDirNames(skillsDir)) {
-		const dir = path.join(skillsDir, name);
-		if (!(await isManagedSkillDir(dir))) continue;
-		const stats = await lstatIfPresent(path.join(dir, "SKILL.md"), { bigint: true });
-		if (stats) versions.set(name, `${stats.ino}:${stats.mtimeNs}:${stats.size}`);
-	}
-	return versions;
 }
 
 /**

@@ -69,15 +69,6 @@ export function dataDir(env = process.env) {
 	return path.resolve(env.CLAUDE_PLUGIN_DATA || path.join(claudeConfigDir(env), "auto-learn"));
 }
 
-/**
- * Claude Code's global configuration, where it records each project's last
- * session and what that session cost. It sits beside ~/.claude, not in it.
- */
-// shortcut: skips the legacy ~/.claude/.config.json and the OAuth-suffixed names Claude Code may read instead, so their users get claude's own total; read them when someone needs it.
-export function claudeGlobalConfigFile(env = process.env, home = os.homedir()) {
-	return path.join(env.CLAUDE_CONFIG_DIR || home, ".claude.json");
-}
-
 /** A path for messages and prompts, with the home directory shown as ~. */
 export function displayPath(target, home = os.homedir()) {
 	const relative = path.relative(home, target);
