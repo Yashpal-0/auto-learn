@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { captureTurn, drainQueue, GATE_SETTINGS, MANAGE_SKILL_TOOL, requestedSave, runFork, skillChanges } from "../scripts/lib/capture.mjs";
 import { captureNudge } from "../scripts/lib/prompts.mjs";
 import { acquireLock, forgetSession, queueCapture, takeJob, writeSessionState } from "../scripts/lib/state.mjs";
+import { manageSkill } from "../scripts/lib/skills.mjs";
 import { entry, linked, tempDir, toJsonl, turnWithToolCalls } from "./helpers.mjs";
 
 const FAKE_CLAUDE = new URL("./fake-claude.mjs", import.meta.url).pathname;
@@ -325,6 +326,17 @@ test("captureTurn reports only the skills the fork saved, not one another sessio
 	const record = await captureTurn(w.job, { env: w.env });
 	assert.deepEqual([record.created, record.updated, record.deleted], [["fake-skill"], [], []]);
 	await fs.access(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "other-skill", "SKILL.md"));
+});
+
+test("captureTurn counts a revision-checked update without counting its read as a save", async (t) => {
+	const w = await world(t, "update");
+	await manageSkill({ action: "create", name: "existing-skill", description: "Use when testing", body: "Original steps." }, { skillsDir: w.env.AUTO_LEARN_SKILLS_DIR });
+	const result = await captureTurn(w.job, { env: w.env });
+	assert.equal(result.outcome, "ok");
+	assert.deepEqual(result.created, []);
+	assert.deepEqual(result.updated, ["existing-skill"]);
+	assert.deepEqual(result.deleted, []);
+	assert.match(await fs.readFile(path.join(w.env.AUTO_LEARN_SKILLS_DIR, "existing-skill", "SKILL.md"), "utf8"), /Original steps\.\nVerified extra step\./);
 });
 
 test("captureTurn passes on the session's effort level, if it is a plain word", async (t) => {

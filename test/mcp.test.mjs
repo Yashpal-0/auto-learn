@@ -45,7 +45,8 @@ test("tools/list offers manage_skill with a strict schema", async (t) => {
 	assert.equal(tool.name, "manage_skill");
 	assert.match(tool.description, /never changes a skill it did not create/);
 	assert.deepEqual(tool.inputSchema.required, ["action", "name"]);
-	assert.deepEqual(tool.inputSchema.properties.action.enum, ["create", "update", "delete"]);
+	assert.deepEqual(tool.inputSchema.properties.action.enum, ["read", "create", "update", "delete"]);
+	assert.equal(tool.inputSchema.properties.revision.type, "string");
 	assert.equal(tool.inputSchema.additionalProperties, false);
 });
 
@@ -59,6 +60,48 @@ test("tools/call runs manage_skill and reports refusals as tool errors", async (
 	const again = await handle(call(2, createArgs));
 	assert.equal(again.result.isError, true);
 	assert.match(again.result.content[0].text, /already exists/);
+});
+
+test("Claude MCP clients read revisions and refuse stale mutations from another client", async (t) => {
+	const { handle, skillsDir, projectDir } = await server(t);
+	const other = createMcpServer({ skillsDir, projectDir });
+	await handle(call(1, createArgs));
+	const read = await handle(call(2, { action: "read", name: createArgs.name }));
+	assert.equal(read.result.isError, undefined);
+	const snapshot = JSON.parse(read.result.content[0].text);
+	const updated = await other(call(3, { ...createArgs, action: "update", body: "New verified steps.", revision: snapshot.revision }));
+	assert.equal(updated.result.isError, undefined);
+	for (const action of ["update", "delete"]) {
+		const refused = await handle(call(4, { ...createArgs, action, revision: snapshot.revision }));
+		assert.equal(refused.result.isError, true);
+		assert.match(refused.result.content[0].text, /changed.*read/i);
+	}
+	assert.match(await fs.readFile(path.join(skillsDir, createArgs.name, "SKILL.md"), "utf8"), /New verified steps/);
+});
+
+test("separate Claude MCP processes cannot save competing copies of one revision", async (t) => {
+	const root = await tempDir(t);
+	const client = () => {
+		const child = spawn(process.execPath, [SERVER_SCRIPT], {
+			env: { ...process.env, AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"), CLAUDE_PROJECT_DIR: root },
+			stdio: ["pipe", "pipe", "inherit"],
+		});
+		t.after(() => child.kill());
+		const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+		let id = 0;
+		return async (args) => {
+			child.stdin.write(`${JSON.stringify(call(++id, args))}\n`);
+			return JSON.parse((await replies.next()).value).result;
+		};
+	};
+	const first = client();
+	const second = client();
+	assert.equal((await first(createArgs)).isError, undefined);
+	const snapshot = JSON.parse((await first({ action: "read", name: createArgs.name })).content[0].text);
+	const saved = await Promise.all([first, second].map((request, i) => request({ ...createArgs, action: "update", body: `Writer ${i}.`, revision: snapshot.revision })));
+	assert.equal(saved.filter(({ isError }) => isError !== true).length, 1);
+	assert.match(saved.find(({ isError }) => isError === true).content[0].text, /changed|changing/);
+	assert.match(await fs.readFile(path.join(root, "skills", createArgs.name, "SKILL.md"), "utf8"), /Writer [01]\./);
 });
 
 test("unknown tools, unknown methods and malformed requests are JSON-RPC errors", async (t) => {
@@ -87,6 +130,8 @@ test("the Codex server asks for each call's sandbox state and describes the tool
 	const [tool] = (await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" })).result.tools;
 	assert.match(tool.description, /Codex offers/);
 	assert.match(tool.inputSchema.properties.description.description, /Codex matches tasks against it/);
+	assert.deepEqual(tool.inputSchema.properties.action.enum, ["create", "update", "delete"]);
+	assert.equal(tool.inputSchema.properties.revision, undefined);
 	assert.doesNotMatch(JSON.stringify(tool), /Claude/);
 });
 

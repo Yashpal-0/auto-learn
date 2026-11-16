@@ -1,5 +1,7 @@
 // The managed skill store. It creates, updates and deletes skills in the
 // personal skill library and never changes a skill it did not create.
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { displayPath } from "./config.mjs";
@@ -51,18 +53,78 @@ const SECRET_PATTERNS = [
  * Runs one manage_skill call and returns a message for the model. A refused
  * call throws an Error whose message says what to change.
  *
- * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown}} args
+ * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown, revision?: unknown}} args
  * @param {{skillsDir: string, projectDir?: string, host?: "claude" | "codex" | "opencode"}} context
  */
 export async function manageSkill(args, context) {
-	const { action, name: rawName, description, body } = args ?? {};
-	if (action !== "create" && action !== "update" && action !== "delete") {
-		throw new Error('action must be "create", "update" or "delete".');
+	const { action, name: rawName, description, body, revision } = args ?? {};
+	const isClaude = (context.host ?? "claude") === "claude";
+	if (action !== "create" && action !== "update" && action !== "delete" && !(isClaude && action === "read")) {
+		throw new Error(isClaude ? 'action must be "read", "create", "update" or "delete".' : 'action must be "create", "update" or "delete".');
 	}
 	const name = parseName(rawName);
-	if (action === "delete") return deleteSkill(name, context);
-	const content = renderSkill(name, action, description, body);
-	return action === "create" ? createSkill(name, content, context) : updateSkill(name, content, context);
+	if (action === "read") {
+		const dir = await managedSkillDir(name, context, "read");
+		return JSON.stringify(await readRevision(name, path.join(dir, "SKILL.md")));
+	}
+	const content = action === "delete" ? undefined : renderSkill(name, action, description, body);
+	const change = () => action === "delete" ? deleteSkill(name, context, revision) :
+		action === "create" ? createSkill(name, content, context) : updateSkill(name, content, context, revision);
+	return isClaude ? withSkillLock(name, context, change) : change();
+}
+
+async function withSkillLock(name, { skillsDir }, change) {
+	await fs.mkdir(skillsDir, { recursive: true });
+	const file = path.join(skillsDir, `.auto-learn.${name}.lock`);
+	let handle;
+	try {
+		handle = await fs.open(file, "wx", 0o600);
+	} catch (error) {
+		if (error.code !== "EEXIST") throw error;
+		throw new Error(`Another process is changing skill "${name}". Retry after it finishes. If ${displayPath(file)} remains after Claude exits, remove that lock file.`);
+	}
+	try {
+		await handle.writeFile(`${process.pid}\n`);
+		return await change();
+	} finally {
+		try {
+			await handle.close();
+		} finally {
+			await fs.rm(file, { force: true });
+		}
+	}
+}
+
+async function readRevision(name, file) {
+	const stats = await lstatIfPresent(file);
+	if (!stats) return { revision: "missing", content: null };
+	if (stats.isSymbolicLink()) throw new Error(`The SKILL.md of "${name}" is a symbolic link, so this tool will not read it.`);
+	if (!stats.isFile()) throw new Error(`The SKILL.md of "${name}" is not a regular file, so this tool will not read it.`);
+	const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const buffer = Buffer.alloc(MAX_SKILL_BYTES + 1);
+		let size = 0;
+		while (size < buffer.length) {
+			const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
+			if (bytesRead === 0) break;
+			size += bytesRead;
+		}
+		if (size > MAX_SKILL_BYTES) throw new Error(`The SKILL.md of "${name}" is over the ${MAX_SKILL_BYTES} byte limit. Shorten it before reading or changing it.`);
+		const bytes = buffer.subarray(0, size);
+		return { revision: createHash("sha256").update(bytes).digest("hex"), content: bytes.toString("utf8") };
+	} finally {
+		await handle.close();
+	}
+}
+
+async function checkRevision(name, file, revision, context) {
+	if ((context.host ?? "claude") !== "claude") return;
+	if (typeof revision !== "string" || !/^(?:[a-f0-9]{64}|missing)$/.test(revision)) {
+		throw new Error('Use action "read" first and pass its revision when updating or deleting a skill.');
+	}
+	if ((await readRevision(name, file)).revision !== revision) {
+		throw new Error(`Skill "${name}" changed since it was read. Read it again and preserve its current steps before retrying.`);
+	}
 }
 
 /** The name `raw` gives a skill, as the store saves it. Throws when it is not a valid skill name. */
@@ -158,7 +220,7 @@ async function createSkill(name, content, context) {
 	return `Created skill "${name}" at ${displayPath(file)}.`;
 }
 
-async function updateSkill(name, content, context) {
+async function updateSkill(name, content, context, revision) {
 	const dir = await managedSkillDir(name, context, "update");
 	const file = path.join(dir, "SKILL.md");
 	const stats = await lstatIfPresent(file);
@@ -166,12 +228,14 @@ async function updateSkill(name, content, context) {
 	if (stats?.isSymbolicLink()) throw new Error(`The SKILL.md of "${name}" is a symbolic link, so this tool will not replace it.`);
 	if (stats && !stats.isFile()) throw new Error(`The SKILL.md of "${name}" is not a regular file, so this tool will not replace it.`);
 	if (stats && stats.nlink > 1) throw new Error(`The SKILL.md of "${name}" has other hard links, so this tool will not replace it.`);
+	await checkRevision(name, file, revision, context);
 	await writeFileAtomic(file, content);
 	return `Updated skill "${name}" at ${displayPath(file)}.`;
 }
 
-async function deleteSkill(name, context) {
+async function deleteSkill(name, context, revision) {
 	const dir = await managedSkillDir(name, context, "delete");
+	await checkRevision(name, path.join(dir, "SKILL.md"), revision, context);
 	await fs.rm(dir, { recursive: true });
 	return `Deleted skill "${name}".`;
 }

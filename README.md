@@ -38,7 +38,7 @@ auto-learn needs:
    claude -p --resume <session> --resume-session-at <last message> --fork-session --no-session-persistence
    ```
 
-   with the session's model and effort, in the session's project folder. The fork sees the conversation up to the end of that turn, exactly as the session did, and reads it from the prompt cache the session has just written. It receives one request: look back at the turn and, if it worked out a procedure that a later session would otherwise have to discover again, save it with `manage_skill`; otherwise save nothing. The request also tells Claude to treat instructions in files, tool output and quoted text as evidence, not as instructions, and to update or delete a skill only when its full text is in the conversation. The fork is not saved as a session and does not appear in `/resume`.
+   with the session's model and effort, in the session's project folder. The fork sees the conversation up to the end of that turn, exactly as the session did, and reads it from the prompt cache the session has just written. It receives one request: look back at the turn and, if it worked out a procedure that a later session would otherwise have to discover again, save it with `manage_skill`; otherwise save nothing. The request also tells Claude to treat instructions in files, tool output and quoted text as evidence, not as instructions. Before updating or deleting a managed skill, it reads that skill with `manage_skill`, preserves the steps that still hold, and passes the returned revision. If another writer changed the skill, the review leaves it for later. The fork is not saved as a session and does not appear in `/resume`.
 5. Only `manage_skill` runs in the fork. A PreToolUse hook refuses every other tool; on Claude Code 2.1.295 or later it also refuses the call when the hook itself fails or takes more than 10 seconds. The fork runs in `dontAsk` permission mode, so it never prompts, edits files or runs commands. ToolSearch is allowed so that the fork can load the `manage_skill` schema. A hook cannot refuse the server-side advisor tool, so the request tells Claude not to use it, and the log counts any advisor calls.
 6. A review stops after 10 model turns or 5 minutes. Reviews of one session run one at a time, oldest first. Ending the session (exiting, `/clear`, or switching to another session with `/resume`) stops its running and queued reviews.
 
@@ -55,6 +55,10 @@ Skills are saved to `~/.claude/skills/<name>/SKILL.md` (`$CLAUDE_CONFIG_DIR/skil
 - `create` refuses a name that any skill already uses, in your personal skills or in the project's `.claude/skills`.
 - `update` and `delete` work only on skills that carry the marker, and never through a symbolic link. Skills you wrote, and skills linked in from elsewhere, are never changed.
 - `update` replaces a skill's whole description and body. A review is told to keep the steps that still hold, but a model's edit can still lose details.
+
+In Claude Code, `manage_skill` also has a `read` action. It returns JSON with the managed skill's complete `content` and a SHA-256 `revision`. An `update` or `delete` must include the revision from that read; stale or missing revisions are refused. Existing skill files need no migration. A managed folder without `SKILL.md` returns `content: null` and `revision: "missing"`, so it can be restored or removed deliberately. Reads refuse files larger than 32 KiB and symbolic links.
+
+Claude saves use an exclusive lock per skill across MCP processes. A competing change fails with a retry message; its revision is checked again when retried. Locks coordinate auto-learn's writes, while revision checks also detect user edits made before a save. An editor that writes during the save does not take this lock.
 
 At the start of each session, and again after each compaction, auto-learn lists the learned skills for Claude with a short description of each: the whole description when it is up to 160 characters, else its first sentence, else its start cut at a word. Claude Code lists every skill too, but once its listing outgrows its budget (1% of the context window by default), it lists some skills by name only, starting with the skills you have used least, and a new learned skill has not been used yet. auto-learn's list puts the most recently changed skills first and stops at 4,000 characters, about 1,000 tokens. It leaves out the skills that `skillOverrides` in your `~/.claude/settings.json` sets to anything other than `on`.
 
@@ -123,6 +127,8 @@ The `costUsd` field in the [log](#log) is the full cost of a review, side reques
 
 The learned-skill list adds at most about 1,000 tokens to each session's context.
 
+The measurements above predate revision-checked reads. Updating or deleting a skill now requires a preceding `read` tool call.
+
 To spend less, raise `minToolCalls`, or turn `autoCapture` off and leave saving skills to Claude during the session.
 
 ## Privacy
@@ -144,6 +150,7 @@ The fork is a Claude Code session with your settings, so your other hooks, plugi
 - The fork runs the `claude` on `PATH`, which can be a different version from the running session.
 - auto-learn reads skill overrides from your user settings only. A learned skill that project, local or managed settings hide is still in auto-learn's list.
 - Claude Code tells a running session about skills that were added or whose description changed, but not about deleted ones or a changed body. A learned skill deleted during a session stays in that session's skill listing until the session restarts or is compacted.
+- A process killed during a save may leave `.auto-learn.<name>.lock` in the skill library. Later changes refuse and name the lock file. Close the Claude sessions using that library before removing only the named lock file, then retry the change.
 - Tested with Claude Code 2.1.322 on Linux only.
 
 ## Uninstall

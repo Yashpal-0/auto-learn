@@ -248,14 +248,16 @@ test("an exclamation mark beside ordinary inline code is not mistaken for shell-
 		'- `!`/`$` runs, advisor, skill, background-job blocks are `"message"`',
 	].join("\n");
 	await create(context, "kept-steps", { body });
-	await manageSkill({ action: "update", name: "kept-steps", description: "Use when testing", body }, context);
+	const { revision } = JSON.parse(await manageSkill({ action: "read", name: "kept-steps" }, context));
+	await manageSkill({ action: "update", name: "kept-steps", description: "Use when testing", body, revision }, context);
 });
 
 test("update replaces a managed skill and leaves no temporary files", async (t) => {
 	const { context } = await library(t);
 	await create(context, "deploy-docs");
+	const { revision } = JSON.parse(await manageSkill({ action: "read", name: "deploy-docs" }, context));
 	const message = await manageSkill(
-		{ action: "update", name: "deploy-docs", description: "Use when shipping docs", body: "New steps." },
+		{ action: "update", name: "deploy-docs", description: "Use when shipping docs", body: "New steps.", revision },
 		context,
 	);
 	assert.match(message, /Updated skill "deploy-docs"/);
@@ -307,14 +309,16 @@ test("update restores a managed skill whose SKILL.md went missing", async (t) =>
 	const { context } = await library(t);
 	await create(context, "deploy-docs");
 	await fs.rm(path.join(context.skillsDir, "deploy-docs", "SKILL.md"));
-	await manageSkill({ action: "update", name: "deploy-docs", description: "d", body: "b" }, context);
+	const { revision } = JSON.parse(await manageSkill({ action: "read", name: "deploy-docs" }, context));
+	await manageSkill({ action: "update", name: "deploy-docs", description: "d", body: "b", revision }, context);
 	assert.match(await read(path.join(context.skillsDir, "deploy-docs", "SKILL.md")), /\n\nb\n$/);
 });
 
 test("delete removes a managed skill and nothing else", async (t) => {
 	const { root, context } = await library(t);
 	await create(context, "old");
-	assert.match(await manageSkill({ action: "delete", name: "old" }, context), /Deleted skill "old"/);
+	const { revision } = JSON.parse(await manageSkill({ action: "read", name: "old" }, context));
+	assert.match(await manageSkill({ action: "delete", name: "old", revision }, context), /Deleted skill "old"/);
 	await assert.rejects(fs.access(path.join(context.skillsDir, "old")));
 	await assert.rejects(manageSkill({ action: "delete", name: "old" }, context), /no skill named "old"/);
 

@@ -2,6 +2,7 @@
 // $FAKE_CLAUDE_RECORD and behaves as $FAKE_CLAUDE_MODE says:
 //   ok      reply, then print a successful result
 //   create  save a skill through the plugin's MCP server, then print a result
+//   update  read a managed skill's revision, then update it through the MCP server
 //   overlap as create, while another session saves a skill of its own
 //   tools   call the advisor, the allowed tools and refused ones, then print a result
 //   huge    print a 9 MiB line that calls a refused tool, then a reply that calls another
@@ -102,6 +103,7 @@ async function callManageSkill(toolUseId, input) {
 	const called = JSON.parse((await lines.next()).value).result;
 	child.stdin.end();
 	toolResult(toolUseId, called.content, called.isError === true);
+	return called;
 }
 
 /** A reply that saves `skill`, the skill saved, and the call's result. */
@@ -126,6 +128,16 @@ switch (process.env.FAKE_CLAUDE_MODE) {
 		await save({ action: "create", name: "fake-skill" });
 		print(result());
 		break;
+	case "update": {
+		print(INIT);
+		const input = { action: "read", name: "existing-skill" };
+		reply([{ type: "tool_use", id: "toolu_read_skill", name: MANAGE_SKILL_TOOL, input }]);
+		const read = await callManageSkill("toolu_read_skill", input);
+		const { revision } = JSON.parse(read.content[0].text);
+		await save({ action: "update", name: "existing-skill", body: "Original steps.\nVerified extra step.", revision });
+		print(result());
+		break;
+	}
 	case "overlap":
 		print(INIT);
 		await manageSkill(

@@ -11,10 +11,11 @@ const SANDBOX_STATE = "codex/sandbox-state";
 
 /** @param {string} agent The agent that offers saved skills. */
 export function inputSchema(agent) {
+	const isClaude = agent === "Claude Code";
 	return {
 		type: "object",
 		properties: {
-			action: { type: "string", enum: ["create", "update", "delete"], description: "What to do with the skill." },
+			action: { type: "string", enum: isClaude ? ["read", "create", "update", "delete"] : ["create", "update", "delete"], description: "What to do with the skill." },
 			name: {
 				type: "string",
 				description: 'The skill\'s name: 1-64 lowercase letters and digits, with single hyphens between words, such as "deploy-docs".',
@@ -27,6 +28,12 @@ export function inputSchema(agent) {
 				type: "string",
 				description: "The skill's instructions in Markdown, without frontmatter. Needed for create and update.",
 			},
+			...(isClaude ? {
+				revision: {
+					type: "string",
+					description: 'The revision returned by action "read". Required for update and delete; pass it unchanged. If the skill changed, read again and preserve its current steps.',
+				},
+			} : {}),
 		},
 		required: ["action", "name"],
 		additionalProperties: false,
