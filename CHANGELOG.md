@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Claude Code: `manage_skill` can read a managed skill's full text and revision. Updates and deletes require that revision and refuse stale copies, so a review cannot silently replace another session's saved steps. Exclusive locks serialize changes across MCP processes. Existing skill files need no conversion; callers must read before updating or deleting.
+- Claude Code: skill creation checks ancestor project skills up to the Git repository or worktree root, main-checkout skills and commands inherited by a linked worktree, and legacy commands in project and personal `.claude/commands` folders, before creating a personal skill that would shadow them.
+- Claude Code: skill creation refuses the reserved names `synced` and `anthropic-skills`. Older managed skills with either name can still be read and deleted.
 
 - Claude Code: the log's `costUsd` now subtracts the session's last `cost-state` entry in its transcript, which is what Claude Code starts a review fork's cost counters from. The 0.1.1 entry below was wrong about the source: `~/.claude.json` records only a project's last session to exit, so when another session in the same project exited later, versions 0.1.1 to 0.3.0 logged the session's earlier cost as part of `costUsd`. A total that auto-learn cannot check is now logged as `reportedCostUsd`, never as `costUsd`.
 - Claude Code: reviews read the fork's messages as they arrive. A review that hits its time limit, or is stopped because the session ended, now logs its turns, tokens, calls and saved skills so far, without a cost; one stopped after Claude Code printed its result is logged from that result. A fork that ends without a result is logged with the error `claude ended without a result (exit N): …`.

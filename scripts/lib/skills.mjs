@@ -1,9 +1,11 @@
 // The managed skill store. It creates, updates and deletes skills in the
 // personal skill library and never changes a skill it did not create.
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { displayPath } from "./config.mjs";
 import { writeFileAtomic } from "./files.mjs";
 
@@ -20,7 +22,9 @@ export const MAX_DESCRIPTION_CHARS = 1024;
 
 const MAX_NAME_CHARS = 64;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CLAUDE_RESERVED_NAMES = new Set(["synced", "anthropic-skills"]);
 const MISSING = new Set(["ENOENT", "ENOTDIR"]);
+const runFile = promisify(execFile);
 
 const SECRET_PATTERNS = [
 	["a private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/],
@@ -63,6 +67,9 @@ export async function manageSkill(args, context) {
 		throw new Error(isClaude ? 'action must be "read", "create", "update" or "delete".' : 'action must be "create", "update" or "delete".');
 	}
 	const name = parseName(rawName);
+	if (isClaude && action === "create" && CLAUDE_RESERVED_NAMES.has(name)) {
+		throw new Error(`The skill name "${name}" is reserved by Claude Code. Pick another name.`);
+	}
 	if (action === "read") {
 		const dir = await managedSkillDir(name, context, "read");
 		return JSON.stringify(await readRevision(name, path.join(dir, "SKILL.md")));
@@ -194,8 +201,10 @@ export function cleanDescription(value) {
 async function createSkill(name, content, context) {
 	const projectSkills = await projectSkillsDir(context);
 	// A personal skill would shadow the project's skill of the same name.
-	if (projectSkills && (await entryType(path.join(projectSkills, name)))) {
-		throw new Error(`A skill named "${name}" already exists in this project. Pick another name.`);
+	const conflict = (context.host ?? "claude") === "claude" ? await claudeSkillConflict(name, context) :
+		projectSkills && (await entryType(path.join(projectSkills, name))) && path.join(projectSkills, name);
+	if (conflict) {
+		throw new Error(`A skill named "${name}" already exists at ${displayPath(conflict)}. Pick another name.`);
 	}
 	await fs.mkdir(context.skillsDir, { recursive: true });
 	const dir = path.join(context.skillsDir, name);
@@ -257,6 +266,71 @@ async function managedSkillDir(name, { skillsDir }, action) {
 async function isManagedSkillDir(dir) {
 	const [dirType, markerType] = await Promise.all([entryType(dir), entryType(path.join(dir, MARKER_FILE))]);
 	return dirType === "directory" && markerType === "file";
+}
+
+async function claudeSkillConflict(name, { skillsDir, projectDir }) {
+	const personal = await canonicalPath(skillsDir);
+	const candidates = [path.join(path.dirname(path.resolve(skillsDir)), "commands", `${name}.md`)];
+	if (projectDir) {
+		const projects = await claudeProjectDirs(projectDir);
+		for (const project of projects) {
+			const skills = path.join(project, ".claude", "skills");
+			if ((await canonicalPath(skills)) !== personal) candidates.push(path.join(skills, name));
+			candidates.push(path.join(project, ".claude", "commands", `${name}.md`));
+		}
+		for (const folder of await claudeWorktreeFolders(projects.at(-1))) {
+			if (path.basename(folder) === "commands") candidates.push(path.join(folder, `${name}.md`));
+			else if ((await canonicalPath(folder)) !== personal) candidates.push(path.join(folder, name));
+		}
+	}
+	for (const candidate of candidates) if (await entryType(candidate)) return candidate;
+	return undefined;
+}
+
+async function claudeProjectDirs(projectDir) {
+	const directories = [];
+	for (let dir = await canonicalPath(projectDir); ; dir = path.dirname(dir)) {
+		directories.push(dir);
+		if (await entryType(path.join(dir, ".git"))) return directories;
+		if (path.dirname(dir) === dir) return directories.slice(0, 1);
+	}
+}
+
+async function claudeWorktreeFolders(root) {
+	if ((await entryType(path.join(root, ".git"))) !== "file") return [];
+	const missing = [];
+	for (const folder of ["skills", "commands"]) {
+		try {
+			if ((await fs.stat(path.join(root, ".claude", folder))).isDirectory()) continue;
+		} catch (error) {
+			if (!MISSING.has(error.code)) throw error;
+		}
+		missing.push(folder);
+	}
+	if (missing.length === 0) return [];
+	const [gitDir, commonDir] = await Promise.all([gitPath(root, "--git-dir"), gitPath(root, "--git-common-dir")]);
+	if (gitDir === commonDir) return [];
+	const main = path.dirname(commonDir);
+	if (path.basename(commonDir) !== ".git" || (await canonicalPath(await gitPath(main, "--show-toplevel"))) !== main) {
+		throw new Error("Cannot check inherited skills in this worktree's main checkout. Ensure the worktree has its own .claude/skills and .claude/commands directories before creating a personal skill.");
+	}
+	return missing.map((folder) => path.join(main, ".claude", folder));
+}
+
+async function gitPath(directory, flag) {
+	try {
+		const { stdout } = await runFile("git", ["-C", directory, "rev-parse", "--path-format=absolute", flag], {
+			env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+			timeout: 5000,
+			maxBuffer: 64 * 1024,
+			encoding: "utf8",
+		});
+		const result = stdout.replace(/\n$/, "");
+		if (path.isAbsolute(result)) return result;
+	} catch (error) {
+		throw new Error("Cannot check inherited skills for this checkout. Ensure Git 2.31 or later is on PATH and the worktree is valid, then retry.", { cause: error });
+	}
+	throw new Error("Git returned no absolute checkout path; repair the worktree before creating a personal skill.");
 }
 
 /** The project's skills directory, or undefined when there is none or it is the personal library itself. */

@@ -7,6 +7,6 @@ Use it to keep procedures that will be needed again: setup sequences, debugging 
 - `update` replaces the description and body of a skill this tool created. Read it first, preserve its current steps, and pass its `revision` unchanged.
 - `delete` removes a skill this tool created. Read it first and pass its `revision` unchanged.
 
-An update or delete fails if another save or a user edit changed the skill since it was read. Read again before retrying; never discard the newer steps.
+An update or delete fails if another save or a user edit changed the skill since it was read. Read again before retrying; never discard the newer steps. Names `synced` and `anthropic-skills` are reserved by Claude Code and cannot be created.
 
 The tool never changes a skill it did not create, and it refuses skills that contain credentials or tokens.

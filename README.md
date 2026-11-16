@@ -26,6 +26,7 @@ auto-learn needs:
 
 - Node.js 18 or later on `PATH`. The hooks and the MCP server are Node scripts with no dependencies.
 - The `claude` command on the `PATH` that Claude Code passes to its hooks. Each review runs `claude` in the background.
+- Git 2.31 or later on `PATH` when creating skills in a linked worktree missing its own `.claude/skills` or `.claude/commands` directory, to check skills and commands inherited from the main checkout.
 
 ## How a review works in Claude Code
 
@@ -48,11 +49,11 @@ Each queued, skipped and finished review is recorded in the [log](#log).
 
 Skills are saved to `~/.claude/skills/<name>/SKILL.md` (`$CLAUDE_CONFIG_DIR/skills` when that is set), the folder Claude Code reads personal skills from. Each skill that auto-learn creates also holds a `.auto-learn` marker file.
 
-- Names are lowercase letters and digits with single hyphens between words, 1 to 64 characters, for example `deploy-docs`.
+- Names are lowercase letters and digits with single hyphens between words, 1 to 64 characters, for example `deploy-docs`. In Claude Code, `synced` and `anthropic-skills` are reserved and cannot be created; an older managed skill with either name can still be read or deleted.
 - A `SKILL.md` is at most 32 KiB, frontmatter included, and its description at most 1,024 characters.
 - A skill that contains what looks like a credential is refused: private keys, PGP private key blocks included; API keys; GitHub, GitLab, Slack, AWS, Google, Stripe, npm, Hugging Face and PyPI tokens; AWS secret access keys written next to their variable name; Google OAuth client secrets; `Bearer` tokens; passwords in URLs; Slack webhook URLs; age secret keys; OAuth token secrets, Launchpad's credentials file and `PLAINTEXT` signatures included; and JSON Web Tokens. Placeholders such as `$TOKEN`, `${TOKEN}` and `<password>` are accepted. A few examples look real enough to be refused too, such as AWS's documented example key and `Bearer` followed by a placeholder of 20 or more characters; write `$TOKEN` instead.
 - A skill whose body contains `` !`command` ``, a ```` ```! ```` block or a `!` right before an argument such as `$ARGUMENTS` is refused, because Claude Code runs those commands when it loads the skill, after it fills in the arguments. Show commands in an ordinary ```` ```sh ```` block.
-- `create` refuses a name that any skill already uses, in your personal skills or in the project's `.claude/skills`.
+- `create` refuses a name that any skill already uses, in your personal skills or in the project's `.claude/skills`. In Claude Code, this includes project skill folders from the working directory up to the repository or worktree root, plus `.claude/commands/<name>.md` in those folders and your personal configuration folder. A linked worktree missing its own root `.claude/skills` or `.claude/commands` also checks that folder in the main checkout. Outside a Git repository, only the current project's folders are checked.
 - `update` and `delete` work only on skills that carry the marker, and never through a symbolic link. Skills you wrote, and skills linked in from elsewhere, are never changed.
 - `update` replaces a skill's whole description and body. A review is told to keep the steps that still hold, but a model's edit can still lose details.
 
@@ -151,6 +152,7 @@ The fork is a Claude Code session with your settings, so your other hooks, plugi
 - auto-learn reads skill overrides from your user settings only. A learned skill that project, local or managed settings hide is still in auto-learn's list.
 - Claude Code tells a running session about skills that were added or whose description changed, but not about deleted ones or a changed body. A learned skill deleted during a session stays in that session's skill listing until the session restarts or is compacted.
 - A process killed during a save may leave `.auto-learn.<name>.lock` in the skill library. Later changes refuse and name the lock file. Close the Claude sessions using that library before removing only the named lock file, then retry the change.
+- Linked worktrees whose shared Git directory is outside the main checkout's `.git` use a layout this plugin cannot resolve safely. Give the worktree its own `.claude/skills` and `.claude/commands` directories before creating a personal skill; the tool refuses until it can check name collisions.
 - Tested with Claude Code 2.1.322 on Linux only.
 
 ## Uninstall
