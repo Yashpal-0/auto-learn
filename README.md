@@ -282,7 +282,7 @@ copilot plugin marketplace add Yashpal-0/auto-learn
 copilot plugin install auto-learn@auto-learn
 ```
 
-VS Code's Copilot agent host loads the plugins that Copilot CLI installed, so the same install covers both. Start a new session, or a new chat, to load it.
+VS Code's Copilot agent host reads the plugins that Copilot CLI installed, so the same install should cover both. That comes from reading VS Code's code, and the hooks have not run in VS Code yet (see Limitations in GitHub Copilot). Reload the window, or start a new chat, to load it.
 
 To update to a later version, then start a new session:
 
@@ -354,7 +354,7 @@ To spend less, raise `minToolCalls`, or turn `autoCapture` off.
 - auto-learn reads the session's `events.jsonl` and `workspace.yaml` under `~/.copilot/session-state` on your machine, to count tool calls, find where the turn ended, and tell which client runs the session.
 - The copy of the session is a folder next to the session's own, deleted when the review ends.
 - A review is a Copilot prompt like any other: it sends the session's conversation to the model again, through your own Copilot sign-in and configuration.
-- Copilot does not pass `COPILOT_PROVIDER_*` or `COPILOT_OFFLINE` to hooks. A session that runs on your own model provider, or offline, is therefore reviewed on your Copilot sign-in instead: its conversation goes to GitHub's models, or the review fails without a sign-in. Turn `autoCapture` off for such sessions.
+- Copilot does not pass `COPILOT_PROVIDER_*` or `COPILOT_OFFLINE` to hooks. A session that runs on your own model provider, offline, or on a BYOK model picked in VS Code is therefore not reviewed by that provider: the standalone `copilot` that runs the review resumes the copy on your Copilot sign-in, so the conversation goes to GitHub's models, or the review fails and the log says why. Which of the two happens for a BYOK model picked in VS Code has not been verified. Turn `autoCapture` off if you do not want that.
 - As in Claude Code, the request tells the model never to save secrets, credentials or personal data in a skill, `manage_skill` refuses content that looks like a credential, and the log holds no conversation text.
 
 ### Limitations in GitHub Copilot
