@@ -1,0 +1,15 @@
+{
+  "name": "auto-learn",
+  "version": "0.4.0",
+  "description": "Learns skills from your work: after a turn that worked out something reusable, a background review of a copy of the session saves the procedure as a personal skill that GitHub Copilot offers in later sessions.",
+  "author": {
+    "name": "Yashpal-0",
+    "url": "https://github.com/Yashpal-0"
+  },
+  "homepage": "https://github.com/Yashpal-0/auto-learn",
+  "repository": "https://github.com/Yashpal-0/auto-learn",
+  "license": "MIT",
+  "keywords": ["skills", "learning", "automation", "hooks", "mcp"],
+  "hooks": "./copilot/hooks.json",
+  "mcpServers": "./copilot/mcp.json"
+}

@@ -89,3 +89,80 @@ export function codexTurn(turnId, count, settings) {
 	records.push(rollout.item(turnId, "AgentMessage", `${turnId}-reply`));
 	return records;
 }
+
+let copilotEventCount = 0;
+function copilotEvent(type, data) {
+	copilotEventCount++;
+	return { type, data, id: `event-${copilotEventCount}`, timestamp: "2026-11-19T10:00:00.000Z", parentId: copilotEventCount === 1 ? null : `event-${copilotEventCount - 1}` };
+}
+
+/** Events shaped like the lines of a GitHub Copilot session's events.jsonl, as Copilot CLI 1.0.114 writes them. */
+export const copilot = {
+	start: (sessionId) =>
+		copilotEvent("session.start", { sessionId, version: 1, producer: "copilot-agent", copilotVersion: "1.0.114", startTime: "2026-11-19T10:00:00.000Z", context: { cwd: "/work/project" } }),
+	// Copilot delivers the prompt that starts a turn to an idle session; a message sent into a running turn, or a stop hook's reason, is "queued".
+	prompt: (content, delivery = "idle") => copilotEvent("user.message", { content, delivery }),
+	turnStart: (turnId, agentMode = "interactive") => copilotEvent("assistant.turn_start", { turnId, agentMode }),
+	toolStart: (toolCallId, toolName = "bash", extra = {}) => copilotEvent("tool.execution_start", { toolCallId, toolName, arguments: {}, ...extra }),
+	toolEnd: (toolCallId, success = true) => copilotEvent("tool.execution_complete", { toolCallId, success }),
+	reply: (content) => copilotEvent("assistant.message", { content }),
+	turnEnd: (turnId) => copilotEvent("assistant.turn_end", { turnId }),
+	hookStart: (hookInvocationId, hookType, input = {}) => copilotEvent("hook.start", { hookInvocationId, hookType, input }),
+	hookEnd: (hookInvocationId, hookType, output) => copilotEvent("hook.end", { hookInvocationId, hookType, success: true, ...(output ? { output } : {}) }),
+	fusionResolved: (fusionId) => copilotEvent("session.fusion_resolved", { fusionId, turnId: `${fusionId}:turn`, syntheticModel: "hydrafusion-max", policy: "max", pattern: "single" }),
+	fusionCommit: (fusionId) => copilotEvent("session.fusion_commit_started", { fusionId, commitId: `${fusionId}:commit`, kind: "text", toolCallId: null }),
+	fusionDone: (fusionId) => copilotEvent("session.fusion_completed", { fusionId, commitId: `${fusionId}:commit`, turnId: `${fusionId}:turn`, outcome: "completed" }),
+	usage: (sourceSessionId, { nanoAiu, inputTokens, cacheReadTokens, outputTokens }) =>
+		copilotEvent("session.usage_record", { usage: { inputTokens, cacheReadTokens, outputTokens, copilotUsage: { totalNanoAiu: nanoAiu }, accounting: { sourceSessionId } } }),
+};
+
+/**
+ * One main-agent turn of a Copilot session up to its agentStop hooks: a
+ * prompt, `count` tool calls in model rounds of one call each, and the start of
+ * the last round, which is where the events file ends while the hooks run.
+ */
+export function copilotTurn(count, { mode = "interactive", prompt = "Set up the dev database" } = {}) {
+	const events = [copilot.prompt(prompt)];
+	for (let i = 1; i <= count; i++) {
+		const id = `${copilotEventCount}-${i}`;
+		events.push(copilot.turnStart(String(i), mode), copilot.toolStart(`call-${id}`), copilot.toolEnd(`call-${id}`), copilot.turnEnd(String(i)));
+	}
+	events.push(copilot.turnStart(String(count + 1), mode));
+	return events;
+}
+
+/** The timestamp in the input of copilotStopped's agentStop hooks. */
+export const COPILOT_STOP_TIME = 1795103691472;
+
+/**
+ * The end of a Copilot turn in its events file: the last reply, the start of
+ * the main agent's agentStop hooks `hookId` with their input, and their end.
+ */
+export function copilotStopped(sessionId, { hookId = "stop-1", timestamp = COPILOT_STOP_TIME } = {}) {
+	return [
+		copilot.reply("Done: the database is ready."),
+		copilot.turnEnd("last"),
+		copilot.hookStart(hookId, "agentStop", { sessionId, timestamp, cwd: "/work/project", stopReason: "end_turn", stop_hook_active: false }),
+		copilot.hookEnd(hookId, "agentStop"),
+	];
+}
+
+/**
+ * One main-agent turn on a Copilot fusion model, such as VS Code's Auto, in
+ * the order Copilot writes it (checked with VS Code 1.147's agent host): while
+ * the turn's agentStop hooks run, the file holds `before`, where a tool call
+ * shows only as its preToolUse and postToolUse hooks. `after` follows them: the
+ * block that Copilot commits, with the tool calls and model rounds, ending with
+ * session.fusion_completed. An interrupted turn has no end to its block.
+ */
+export function copilotFusionTurn(fusionId, count, { mode = "interactive", prompt = "Set up the dev database" } = {}) {
+	const before = [copilot.fusionResolved(fusionId), copilot.prompt(prompt)];
+	const after = [copilot.fusionCommit(fusionId)];
+	for (let i = 1; i <= count; i++) {
+		const call = `${fusionId}-call-${i}`;
+		before.push(copilot.hookStart(`pre-${call}`, "preToolUse"), copilot.hookEnd(`pre-${call}`, "preToolUse"), copilot.hookStart(`post-${call}`, "postToolUse"), copilot.hookEnd(`post-${call}`, "postToolUse"));
+		after.push(copilot.turnStart(String(i), mode), copilot.toolStart(call), copilot.toolEnd(call), copilot.turnEnd(String(i)));
+	}
+	after.push(copilot.turnStart(String(count + 1), mode), copilot.reply("Done: the database is ready."), copilot.turnEnd(String(count + 1)), copilot.fusionDone(fusionId));
+	return { before, after };
+}

@@ -2,6 +2,7 @@
 // The capture worker the Stop hook starts: captures the session's queued turns, logs each outcome, then exits.
 import { captureTurn, drainQueue } from "./lib/capture.mjs";
 import { captureCodexTurn } from "./lib/codex.mjs";
+import { captureCopilotTurn } from "./lib/copilot.mjs";
 import { dataDir } from "./lib/config.mjs";
 import { appendLog, hasSessionState } from "./lib/state.mjs";
 
@@ -29,10 +30,9 @@ try {
 		async (job) => {
 			let record;
 			try {
-				record =
-					job.host === "codex"
-						? await captureCodexTurn(job, { signal: controller.signal, reviewedTurns })
-						: await captureTurn(job, { signal: controller.signal });
+				if (job.host === "codex") record = await captureCodexTurn(job, { signal: controller.signal, reviewedTurns });
+				else if (job.host === "copilot") record = await captureCopilotTurn(job, { signal: controller.signal });
+				else record = await captureTurn(job, { signal: controller.signal });
 			} catch (error) {
 				// The worker has no terminal, so the log is where a failed capture is reported; the next job still runs.
 				record = { outcome: "error", error: error.message };

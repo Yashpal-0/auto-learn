@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-start --host=copilot",
+        "powershell": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-start --host=copilot",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" stop --host=copilot",
+        "powershell": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" stop --host=copilot",
+        "timeoutSec": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-end --host=copilot",
+        "powershell": "node \"${PLUGIN_ROOT}/scripts/hook.mjs\" session-end --host=copilot",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

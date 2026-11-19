@@ -102,6 +102,30 @@ test("for Codex, create refuses a name a project skill in .agents/skills uses, a
 	assert.match(await create(codex, "claude-only"), /^Created skill/);
 });
 
+test("for GitHub Copilot, create refuses a name a project skill in .github/skills uses", async (t) => {
+	const { context } = await library(t);
+	await authoredSkill(path.join(context.projectDir, ".github", "skills"), "deploy-docs");
+	await assert.rejects(create({ ...context, host: "copilot" }, "deploy-docs"), /another name/);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "deploy-docs")));
+});
+
+test("for GitHub Copilot, create also refuses a name in ~/.agents/skills, which Copilot reads next to its own folder, but only when that folder is another one", async (t) => {
+	const { root, context } = await library(t);
+	const agentsSkillsDir = path.join(root, "agents-skills");
+	const copilot = { ...context, host: "copilot", agentsSkillsDir };
+	await authoredSkill(agentsSkillsDir, "deploy-docs");
+	await assert.rejects(create(copilot, "deploy-docs"), /another name/);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "deploy-docs")));
+	assert.match(await create(copilot, "ship-docs"), /^Created skill/);
+
+	// The same folder is the library itself: a name in it is this tool's own skill, which `create` reports as taken.
+	const same = { ...copilot, agentsSkillsDir: context.skillsDir };
+	await assert.rejects(create(same, "ship-docs"), /this tool created it/);
+
+	// Claude Code does not read that folder.
+	assert.match(await create({ ...context, agentsSkillsDir }, "deploy-docs"), /^Created skill/);
+});
+
 test("for OpenCode, create refuses a name a project skill in .opencode/skills uses", async (t) => {
 	const { context } = await library(t);
 	await authoredSkill(path.join(context.projectDir, ".opencode", "skills"), "deploy-docs");

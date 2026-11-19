@@ -1,6 +1,6 @@
 {
   "name": "auto-learn",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Learns skills from your work: after a turn that worked out something reusable, a background fork of the session saves the procedure as a personal skill that Codex offers in later sessions.",
   "author": {
     "name": "Yashpal-0",

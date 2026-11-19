@@ -46,14 +46,14 @@ export function inputSchema(agent) {
  * starts the server in the plugin's folder, each call's project is the
  * working directory in the sandbox state the call carries, not `projectDir`.
  *
- * @param {{skillsDir: string, projectDir?: string, host?: "claude" | "codex"}} context
+ * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, host?: "claude" | "codex" | "copilot"}} context
  */
 export function createMcpServer(context) {
 	const isCodex = context.host === "codex";
 	const tool = {
 		name: "manage_skill",
 		description: manageSkillDescription(context.skillsDir, context.host),
-		inputSchema: inputSchema(isCodex ? "Codex" : "Claude Code"),
+		inputSchema: inputSchema({ codex: "Codex", copilot: "GitHub Copilot" }[context.host] ?? "Claude Code"),
 	};
 	return async function handle(message) {
 		const isObject = message !== null && typeof message === "object" && !Array.isArray(message);

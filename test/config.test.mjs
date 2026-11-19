@@ -39,10 +39,17 @@ test("OpenCode's skill library follows XDG_CONFIG_HOME and stays separate from C
 	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "opencode"), path.resolve("/elsewhere"));
 });
 
-test("the host is Claude Code without arguments and Codex with --host=codex; anything else is refused", () => {
+test("GitHub Copilot's skill library is skills in COPILOT_HOME, ~/.copilot by default, unless AUTO_LEARN_SKILLS_DIR names one", () => {
+	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg" }, "copilot"), path.join(os.homedir(), ".copilot", "skills"));
+	assert.equal(skillsDir({ COPILOT_HOME: "/copilot" }, "copilot"), path.resolve("/copilot/skills"));
+	assert.equal(skillsDir({ COPILOT_HOME: "/copilot", AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "copilot"), path.resolve("/elsewhere"));
+});
+
+test("the host is Claude Code without arguments, Codex with --host=codex and GitHub Copilot with --host=copilot; anything else is refused", () => {
 	assert.equal(parseHost([]), "claude");
 	assert.equal(parseHost(["--host=codex"]), "codex");
-	for (const args of [["--host=claude"], ["--host", "codex"], ["--host=codex", "extra"], ["codex"]]) {
+	assert.equal(parseHost(["--host=copilot"]), "copilot");
+	for (const args of [["--host=claude"], ["--host", "codex"], ["--host=codex", "extra"], ["codex"], ["--host=opencode"]]) {
 		assert.throws(() => parseHost(args), /Unknown arguments/, JSON.stringify(args));
 	}
 });

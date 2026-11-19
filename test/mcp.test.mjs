@@ -175,6 +175,36 @@ test("the server script serves Codex with --host=codex and refuses other argumen
 	assert.match(stderr, /^auto-learn: Unknown arguments \["--host=other"\]/);
 });
 
+test("the server script serves GitHub Copilot with --host=copilot: its skill library, and COPILOT_SESSION_CWD as the project", async (t) => {
+	const root = await tempDir(t);
+	const projectDir = path.join(root, "project");
+	await fs.mkdir(path.join(projectDir, ".github", "skills", "deploy-docs"), { recursive: true });
+	await fs.writeFile(path.join(projectDir, ".github", "skills", "deploy-docs", "SKILL.md"), "---\nname: deploy-docs\ndescription: The project's own\n---\n\nSteps.\n");
+	// HOME holds ~/.agents/skills, the Codex library that Copilot reads too.
+	const home = path.join(root, "home");
+	await fs.mkdir(path.join(home, ".agents", "skills", "taken-by-codex"), { recursive: true });
+	await fs.writeFile(path.join(home, ".agents", "skills", "taken-by-codex", "SKILL.md"), "---\nname: taken-by-codex\ndescription: Codex's own\n---\n\nSteps.\n");
+	const env = { ...process.env, HOME: home, USERPROFILE: home, COPILOT_HOME: path.join(root, "copilot"), COPILOT_SESSION_CWD: projectDir };
+	delete env.AUTO_LEARN_SKILLS_DIR;
+	const child = spawn(process.execPath, [SERVER_SCRIPT, "--host=copilot"], { cwd: root, env, stdio: ["pipe", "pipe", "inherit"] });
+	// A failed assertion skips closing stdin, and the running server would keep the test from ending.
+	t.after(() => child.kill());
+	const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+	const next = async () => JSON.parse((await replies.next()).value);
+	child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+	const [tool] = (await next()).result.tools;
+	assert.match(tool.description, /GitHub Copilot offers/);
+	assert.match(tool.inputSchema.properties.description.description, /GitHub Copilot/);
+	child.stdin.write(`${JSON.stringify(call(2, createArgs))}\n`);
+	assert.match((await next()).result.content[0].text, /another name/);
+	child.stdin.write(`${JSON.stringify(call(3, { ...createArgs, name: "ship-docs" }))}\n`);
+	assert.match((await next()).result.content[0].text, /^Created skill/);
+	await fs.access(path.join(root, "copilot", "skills", "ship-docs", "SKILL.md"));
+	child.stdin.write(`${JSON.stringify(call(4, { ...createArgs, name: "taken-by-codex" }))}\n`);
+	assert.match((await next()).result.content[0].text, /another name/);
+	child.stdin.end();
+});
+
 test("the server script speaks JSON-RPC over stdio and exits when stdin closes", async (t) => {
 	const root = await tempDir(t);
 	const child = spawn(process.execPath, [SERVER_SCRIPT], {

@@ -35,27 +35,35 @@ function parseCount(raw) {
 
 /**
  * The agent a hook or the MCP server runs for, from its command-line
- * arguments: none for Claude Code, `--host=codex` for Codex.
+ * arguments: none for Claude Code, `--host=codex` for Codex, `--host=copilot`
+ * for GitHub Copilot.
  *
- * @returns {"claude" | "codex"}
+ * @returns {"claude" | "codex" | "copilot"}
  */
 export function parseHost(args) {
 	if (args.length === 0) return "claude";
-	if (args.length === 1 && args[0] === "--host=codex") return "codex";
-	throw new Error(`Unknown arguments ${JSON.stringify(args)}: expected nothing or --host=codex.`);
+	if (args.length === 1 && (args[0] === "--host=codex" || args[0] === "--host=copilot")) return args[0].slice("--host=".length);
+	throw new Error(`Unknown arguments ${JSON.stringify(args)}: expected nothing, --host=codex or --host=copilot.`);
 }
 
 function claudeConfigDir(env) {
 	return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 }
 
+/** GitHub Copilot's configuration and state folder, which holds its skills and sessions. */
+export function copilotHome(env = process.env) {
+	return path.resolve(env.COPILOT_HOME || path.join(os.homedir(), ".copilot"));
+}
+
 /**
  * The personal skills directory the agent discovers, which holds the managed
- * skills: ~/.claude/skills, ~/.agents/skills, or $XDG_CONFIG_HOME/opencode/skills.
+ * skills: ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills, or
+ * $XDG_CONFIG_HOME/opencode/skills.
  */
 export function skillsDir(env = process.env, host = "claude") {
 	if (env.AUTO_LEARN_SKILLS_DIR) return path.resolve(env.AUTO_LEARN_SKILLS_DIR);
 	if (host === "opencode") return path.resolve(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode", "skills");
+	if (host === "copilot") return path.join(copilotHome(env), "skills");
 	return path.resolve(host === "codex" ? path.join(os.homedir(), ".agents", "skills") : path.join(claudeConfigDir(env), "skills"));
 }
 

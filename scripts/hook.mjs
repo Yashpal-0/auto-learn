@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Claude Code and Codex run this for each plugin hook:
-// `hook.mjs <session-start|stop|session-end> [--host=codex]`, with the hook
-// input as JSON on stdin.
+// Claude Code, Codex and GitHub Copilot run this for each plugin hook:
+// `hook.mjs <session-start|stop|session-end> [--host=codex|--host=copilot]`,
+// with the hook input as JSON on stdin.
 import { parseHost } from "./lib/config.mjs";
 import { runHook } from "./lib/hook.mjs";
 

@@ -1,10 +1,10 @@
 # auto-learn
 
-auto-learn lets Claude Code, Codex and OpenCode learn skills from your own work. After a turn in which the agent worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background review looks back at the turn and saves the procedure as a personal skill. The agent then offers that skill whenever a later task matches it.
+auto-learn lets Claude Code, Codex, GitHub Copilot and OpenCode learn skills from your own work. After a turn in which the agent worked something out, such as how to build or test a project, the fix for an error or a setup sequence, a background review looks back at the turn and saves the procedure as a personal skill. The agent then offers that skill whenever a later task matches it.
 
 Each agent can also save skills during a session with the `manage_skill` tool that the plugin adds.
 
-Each host writes to its own skill library: see [Codex](#codex) and [OpenCode](#opencode) for their installation and behavior.
+Each host writes to its own skill library: see [Codex](#codex), [GitHub Copilot](#github-copilot) and [OpenCode](#opencode) for their installation and behavior.
 
 ## Install in Claude Code
 
@@ -271,6 +271,116 @@ codex plugin marketplace remove auto-learn
 
 Learned skills stay in `~/.agents/skills`. If `~/.codex/plugins/data/auto-learn-auto-learn` is still there afterwards, delete it to remove the log.
 
+## GitHub Copilot
+
+auto-learn also runs in GitHub Copilot CLI and in Copilot Chat in VS Code, in chats that run on the Copilot agent host. It works as it does in Claude Code, except that Copilot skills go to their own folder, `~/.copilot/skills`, a review runs in a copy of the session through `copilot -p`, and `manage_skill` has no `read` action, no revision check and no lock.
+
+### Install in GitHub Copilot
+
+```sh
+copilot plugin marketplace add Yashpal-0/auto-learn
+copilot plugin install auto-learn@auto-learn
+```
+
+VS Code's Copilot agent host loads the plugins that Copilot CLI installed, so the same install covers both. Start a new session, or a new chat, to load it.
+
+To update to a later version, then start a new session:
+
+```sh
+copilot plugin update auto-learn@auto-learn
+```
+
+auto-learn needs:
+
+- Node.js 18 or later on `PATH`.
+- The `copilot` command on `PATH`. Each review runs `copilot -p` and `copilot --headless` in the background.
+
+In VS Code, the hooks, the MCP server and the reviews run with the environment VS Code started with, so `node` and `copilot` must be on the `PATH` it was started with.
+
+Copilot reads the plugin from `.github/plugin/plugin.json`, which declares the plugin's Copilot hooks and MCP server. Copilot does not load the Claude Code hooks from the same repository.
+
+### How a review works in GitHub Copilot
+
+1. At session start, the plugin tells Copilot about `manage_skill`, which Copilot lists as `auto-learn-manage_skill`, and lists the learned skills.
+2. When the agent stops, the `agentStop` hook reads the session's events file, `~/.copilot/session-state/<session>/events.jsonl`, from where the previous turn ended to the hook's own start, and counts the main agent's tool calls. Subagents' tool calls and stops are left out. Copilot writes events to that file in batches, a moment after they happen, so the hook waits up to 10 seconds for its own start to be written.
+3. The turn is queued for review when it made at least `minToolCalls` tool calls, someone is at the keyboard, and the turn ran in the interactive mode. Someone is at the keyboard in a VS Code chat and in Copilot CLI's interactive interface. `copilot -p` runs, other Copilot clients, and turns in plan or autopilot mode are not reviewed.
+4. The worker waits until the hook that queued the turn has finished, or for up to 10 minutes, and drops the turn if it has not. It drops the turn too when that hook asked Copilot to carry on, as another plugin's stop hook can: the stop that ends the turn is reviewed instead, with the tool calls of all the turn's stops added up. It then copies the session's events up to that point into a new session folder next to the session. The session itself is only read.
+5. The worker runs `copilot -p` in the session's project folder. It resumes the copy and sends the review request. The request tells Copilot to treat instructions in files, tool output and quoted text as evidence, never to save secrets, to update or delete a skill only when its complete text is visible in the conversation, and not to open a skill's file. `--available-tools` makes `manage_skill` the only tool the model can see, and `--allow-tool` approves it, so the review never prompts. auto-learn does not choose the review's model: Copilot picks it, as for any resumed session.
+6. Afterwards, the worker deletes the copy through `copilot --headless`. This also removes the copy from Copilot's session store, so it does not appear among your sessions. If that fails, the worker deletes the copy's folder itself and the log says why.
+7. A review stops after 5 minutes. Reviews of one session run one at a time, oldest first. Ending the session stops its running and queued reviews.
+
+On a fusion model, such as VS Code's Auto, Copilot writes a turn's tool calls to the events file after the turn's stop, so the stop hook cannot count them. It queues the turn anyway, and the log's `queued` entry says `fusion: true`. The worker waits for Copilot to complete the turn, counts its tool calls then, and applies the rules of step 3: a `capture` entry that says `fewer than 5 tool calls`, `plan mode` or `autopilot mode` means the turn was dropped. A fusion turn that stops more than once is reviewed at its last stop, and a turn that Copilot interrupts is not reviewed.
+
+The review is a Copilot session with your configuration, so your other plugins' hooks and MCP servers load in it too. Their hooks see `AUTO_LEARN_CAPTURE=1`, which tells them they run in a review; auto-learn's own hooks do nothing there. Only the 5 minutes bound a review: auto-learn sets no limit on its model turns, unlike Claude Code's 10. A stop hook that keeps asking Copilot to go on keeps a review running, and billed, until they end.
+
+### Skills in GitHub Copilot
+
+Skills are saved to `~/.copilot/skills/<name>/SKILL.md` (under `$COPILOT_HOME` when that is set), the folder Copilot reads personal skills from, under the rules in [Skills](#skills), except that `manage_skill` has no `read` action and `update` and `delete` need no revision. `create` refuses a name that a skill in `~/.copilot/skills`, in `~/.agents/skills` (the Codex library, which Copilot reads too) or in the project's `.github/skills` already uses. Copilot lists a skill saved during a session from the next session on. To list the learned skills:
+
+```sh
+find ~/.copilot/skills -maxdepth 2 -name .auto-learn
+```
+
+Copilot asks before each `manage_skill` call in your sessions, as it does for any MCP tool. To stop being asked in a repository, answer "Yes, and don't ask again". To allow it for one run, start Copilot with `--allow-tool='auto-learn(manage_skill)'`.
+
+### Options in GitHub Copilot
+
+Copilot has no plugin settings, so set the [options](#options) as the environment variables `CLAUDE_PLUGIN_OPTION_AUTOCAPTURE` (`true` or `false`) and `CLAUDE_PLUGIN_OPTION_MINTOOLCALLS` (a whole number). Hooks read them from the environment Copilot started with:
+
+```sh
+CLAUDE_PLUGIN_OPTION_MINTOOLCALLS=8 copilot
+```
+
+In VS Code, hooks get the environment VS Code started with, so set the variables before you start VS Code, and restart it after changing them. Without them the defaults hold: `autoCapture` on and `minToolCalls` 5.
+
+`AUTO_LEARN_SKILLS_DIR` replaces `~/.copilot/skills` in Copilot, for testing.
+
+### Log in GitHub Copilot
+
+The log is `auto-learn.log` in `~/.copilot/plugin-data/auto-learn/auto-learn/` (under `$COPILOT_HOME` when that is set), with the same events as in Claude Code. A `queued` entry says `fusion: true` for a fusion turn. A Copilot `capture` entry holds the review's outcome and duration, its `manage_skill` calls (`skillCalls`), its other tool calls (`otherToolCalls`) with the names of up to 10 of those tools (`otherTools`), the AI credits Copilot reported for it (`aiCredits`), its tokens (`inputTokens`, `cacheReadTokens`, `outputTokens`), and the skills it created, updated or deleted. `cleanupError` says why deleting the copy through `copilot --headless` failed.
+
+```sh
+tail -n 5 ~/.copilot/plugin-data/auto-learn/auto-learn/auto-learn.log
+```
+
+### Cost in GitHub Copilot
+
+A review is one more prompt, sent through your Copilot sign-in, so it counts toward your plan's premium requests or AI credits like any other prompt. Copilot reports no cost in money, so the log records the AI credits and tokens Copilot reported for the review's model requests. Copilot picks the review's model, so a review of a session on a fusion model such as Auto may run on it, with several model requests for one prompt. auto-learn has not measured this or reviews on GitHub's models; the log's `aiCredits` shows what each review cost.
+
+To spend less, raise `minToolCalls`, or turn `autoCapture` off.
+
+### Privacy in GitHub Copilot
+
+- auto-learn reads the session's `events.jsonl` and `workspace.yaml` under `~/.copilot/session-state` on your machine, to count tool calls, find where the turn ended, and tell which client runs the session.
+- The copy of the session is a folder next to the session's own, deleted when the review ends.
+- A review is a Copilot prompt like any other: it sends the session's conversation to the model again, through your own Copilot sign-in and configuration.
+- Copilot does not pass `COPILOT_PROVIDER_*` or `COPILOT_OFFLINE` to hooks. A session that runs on your own model provider, or offline, is therefore reviewed on your Copilot sign-in instead: its conversation goes to GitHub's models, or the review fails without a sign-in. Turn `autoCapture` off for such sessions.
+- As in Claude Code, the request tells the model never to save secrets, credentials or personal data in a skill, `manage_skill` refuses content that looks like a credential, and the log holds no conversation text.
+
+### Limitations in GitHub Copilot
+
+- A review may still be running when you send the next prompt. Pressing Esc does not stop it; ending the session does.
+- In Copilot CLI, auto-learn tells the interactive interface from `copilot -p` by the `COPILOT_LOADER_PID` variable that the interface sets. A `copilot -p` run started from inside an interactive session, such as by the agent's shell tool, inherits it, so its turns are queued too, but their reviews stop when the run ends, right after its last turn.
+- Reviews run the `copilot` on `PATH`, which can be a different version from the Copilot running the session; VS Code runs its own copy. Without `copilot` on `PATH`, reviews fail and the log says why.
+- A review does not use a model provider set with `COPILOT_PROVIDER_*` or a saved BYOK provider, since Copilot does not pass those to hooks (see Privacy).
+- If `copilot --headless` cannot delete the copy, the copy's record in Copilot's session store stays behind. If the worker is killed mid-review, such as by a reboot or `kill -9`, the copy stays too, as a session named "auto-learn skill review" in `~/.copilot/session-state` that Copilot lists among your sessions. Delete it there.
+- A learned skill that your Copilot configuration disables is still in auto-learn's list.
+- `create` checks `~/.copilot/skills`, `~/.agents/skills` and the `.github/skills` of the session's working folder. It does not check the project's `.agents/skills` and `.claude/skills`, or the `.github/skills` of the folders up to the repository root, which Copilot reads too.
+- Copilot's `manage_skill` has no revision check and no lock, so two sessions that save the same skill at once can overwrite each other, and an `update` replaces whatever the skill holds when it runs.
+- A turn whose stop hook asked Copilot to carry on is reviewed at its final stop. If Copilot does not carry on, for example because you interrupt it, the turn is not reviewed. For a fusion turn that is continued this way, only the tool calls after its last stop count.
+- Reviews start `copilot` without a shell, so on Windows it must be a real executable, not an npm `copilot.cmd` shim. auto-learn has not been tried on Windows.
+- In VS Code, only chats on the Copilot agent host are covered. auto-learn has not been tried with VS Code's other chat session types.
+- Tested with Copilot CLI 1.0.114 on Linux, with a stand-in model, and with VS Code's Auto turns replayed from sessions VS Code 1.147 wrote. The hooks have not run inside VS Code yet. Its sessions show `agentStop` firing when each turn ends and `sessionEnd` only when a session closes, which is what auto-learn relies on.
+
+### Uninstall from GitHub Copilot
+
+```sh
+copilot plugin uninstall auto-learn@auto-learn
+copilot plugin marketplace remove auto-learn
+```
+
+Learned skills stay in `~/.copilot/skills`. If `~/.copilot/plugin-data/auto-learn` is still there afterwards, delete it to remove the log.
+
 ## OpenCode
 
 auto-learn runs as a native OpenCode V2 server plugin. It adds `manage_skill` in the `auto_learn` namespace, lists discoverable learned skills in session instructions, and refreshes OpenCode's skill catalog after a save. It does not need a separate MCP server or the `claude` or `codex` commands.
@@ -381,6 +491,13 @@ In Codex, install a checkout the same way. Codex copies the plugin when you add 
 ```sh
 codex plugin marketplace add ./
 codex plugin add auto-learn@auto-learn
+```
+
+In Copilot, add the checkout as a local marketplace. Copilot loads a plugin from a local marketplace in place, without copying it, so a new session picks up each change:
+
+```sh
+copilot plugin marketplace add ./
+copilot plugin install auto-learn@auto-learn
 ```
 
 In OpenCode V2, load the checkout as a plugin directory in your project configuration:

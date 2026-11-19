@@ -56,10 +56,10 @@ async function exists(file) {
 
 /**
  * Where the session's next turn starts in its transcript, with the prompt id
- * and tool call count of the turn that stopped last, or undefined when
- * nothing is saved.
+ * and tool call count of the turn that stopped last, and for Copilot the id of
+ * the fusion turn still open at that stop, or undefined when nothing is saved.
  *
- * @returns {Promise<{offset: number, promptId?: string, toolCalls: number} | undefined>}
+ * @returns {Promise<{offset: number, promptId?: string, toolCalls: number, fusion?: string} | undefined>}
  */
 export async function readSessionState(dataDir, sessionId) {
 	const value = await readJson(sessionFile(dataDir, "sessions", sessionId, ".json"));
@@ -67,11 +67,12 @@ export async function readSessionState(dataDir, sessionId) {
 	return {
 		offset: value.offset,
 		...(typeof value.promptId === "string" ? { promptId: value.promptId } : {}),
+		...(typeof value.fusion === "string" && value.fusion !== "" ? { fusion: value.fusion } : {}),
 		toolCalls: Number.isSafeInteger(value.toolCalls) && value.toolCalls >= 0 ? value.toolCalls : 0,
 	};
 }
 
-/** @param {{offset: number, promptId?: string, toolCalls: number}} state */
+/** @param {{offset: number, promptId?: string, toolCalls: number, fusion?: string}} state */
 export async function writeSessionState(dataDir, sessionId, state) {
 	await writeJson(sessionFile(dataDir, "sessions", sessionId, ".json"), state);
 }
@@ -94,7 +95,7 @@ export async function forgetSession(dataDir, sessionId) {
  * bytes long. Captures run in the order their turns ended. A Codex job names
  * its turn by id instead of by where it starts.
  *
- * @param {{host?: "codex", sessionId: string, transcriptPath: string, start?: number, end: number, turnId?: string, projectDir?: string, model?: string, modelProvider?: string, effort?: string}} job
+ * @param {{host?: "codex" | "copilot", sessionId: string, transcriptPath: string, start?: number, end: number, turnId?: string, stopId?: string, fusion?: string, toolCalls?: number, projectDir?: string, model?: string, modelProvider?: string, effort?: string}} job
  */
 export async function queueCapture(dataDir, job) {
 	if (!Number.isSafeInteger(job.end) || job.end < 0) throw new Error(`Refusing to queue a capture at transcript offset ${job.end}.`);

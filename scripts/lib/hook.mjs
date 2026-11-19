@@ -1,10 +1,12 @@
-// What the plugin does at each Claude Code or Codex hook event: add the skill
-// guidance and the learned skills at session start, queue a capture after
-// each eligible turn, and forget the session when it ends.
+// What the plugin does at each Claude Code, Codex or GitHub Copilot hook
+// event: add the skill guidance and the learned skills at session start, queue
+// a capture after each eligible turn, and forget the session when it ends.
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { claudeUserSettingsFile, dataDir, loadOptions, skillsDir } from "./config.mjs";
+import { claudeUserSettingsFile, copilotHome, dataDir, loadOptions, skillsDir } from "./config.mjs";
+import { isAttendedSession, readCopilotTurn } from "./copilot.mjs";
 import { guidanceText, learnedSkillsText } from "./prompts.mjs";
 import { readRolloutTurn, readSessionMeta } from "./rollout.mjs";
 import { learnedSkills } from "./skills.mjs";
@@ -20,19 +22,21 @@ const ATTENDED_SOURCES = new Set(["cli", "vscode"]);
  *
  * @param {string} event "session-start", "stop" or "session-end".
  * @param {object} input The hook input the agent sends on stdin.
- * @param {{env?: object, spawnWorker?: Function, host?: "claude" | "codex"}} [options]
+ * @param {{env?: object, spawnWorker?: Function, host?: "claude" | "codex" | "copilot"}} [options]
  */
 export async function runHook(event, input, { env = process.env, spawnWorker = spawnCaptureWorker, host = "claude" } = {}) {
 	// A capture runs in a fork of the session, which must not be captured in turn.
 	if (env.AUTO_LEARN_CAPTURE) return undefined;
-	const sessionId = input?.session_id;
-	if (!isValidSessionId(sessionId)) throw new Error(`The hook input has no usable session_id: ${JSON.stringify(sessionId)}.`);
+	// Copilot's own hook events name their fields in camelCase.
+	const idField = host === "copilot" ? "sessionId" : "session_id";
+	const sessionId = input?.[idField];
+	if (!isValidSessionId(sessionId)) throw new Error(`The hook input has no usable ${idField}: ${JSON.stringify(sessionId)}.`);
 	const dir = dataDir(env);
 	switch (event) {
 		case "session-start":
 			return sessionStart(dir, sessionId, input, env, host);
 		case "stop":
-			await (host === "codex" ? codexStop : stop)(dir, sessionId, input, env, spawnWorker);
+			await ({ codex: codexStop, copilot: copilotStop }[host] ?? stop)(dir, sessionId, input, env, spawnWorker);
 			return undefined;
 		case "session-end":
 			await forgetSession(dir, sessionId);
@@ -45,12 +49,15 @@ export async function runHook(event, input, { env = process.env, spawnWorker = s
 async function sessionStart(dir, sessionId, input, env, host) {
 	// After compaction the session goes on in the same transcript, so the current turn keeps its start.
 	if (input.source !== "compact") {
-		// Codex has no rollout yet for a session that has not started its first turn.
-		const transcriptPath = host === "codex" ? input.transcript_path : transcriptPathOf(input);
+		// Codex has no rollout yet for a session that has not started its first turn, nor Copilot an events file.
+		const transcriptPath =
+			host === "codex" ? input.transcript_path : host === "copilot" ? path.join(copilotHome(env), "session-state", sessionId, "events.jsonl") : transcriptPathOf(input);
 		const offset = typeof transcriptPath === "string" && transcriptPath ? await transcriptSize(transcriptPath) : 0;
 		await writeSessionState(dir, sessionId, { offset, toolCalls: 0 });
 	}
-	return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: await sessionContext(env, host) } };
+	const additionalContext = await sessionContext(env, host);
+	// Copilot adds a sessionStart hook's top-level additionalContext to the session, and ignores hookSpecificOutput.
+	return host === "copilot" ? { additionalContext } : { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
 }
 
 /**
@@ -62,8 +69,8 @@ async function sessionStart(dir, sessionId, input, env, host) {
  */
 async function sessionContext(env, host) {
 	const library = skillsDir(env, host);
-	// shortcut: for Codex, lists learned skills that a skills.config entry in ~/.codex/config.toml disables; read it when someone disables one.
-	const hidden = host === "codex" ? new Set() : await hiddenSkillNames(env);
+	// shortcut: for Codex and Copilot, lists learned skills that their own configuration disables; read it when someone disables one.
+	const hidden = host === "claude" ? await hiddenSkillNames(env) : new Set();
 	const skills = (await learnedSkills(library)).filter(({ name }) => !hidden.has(name));
 	return [guidanceText(library, host), learnedSkillsText(skills, host)].filter(Boolean).join("\n\n");
 }
@@ -158,6 +165,54 @@ async function codexStop(dir, sessionId, input, env, spawnWorker) {
 		...(meta.modelProvider ? { modelProvider: meta.modelProvider } : {}),
 	});
 	await appendLog(dir, { event: "queued", session: sessionId, toolCalls });
+	await spawnWorker(sessionId, env);
+}
+
+/**
+ * Copilot's agentStop: counts the main agent's tool calls in the session's
+ * events file since the last stop, and queues the turn for review when it
+ * made enough of them in the interactive mode with someone at the keyboard.
+ * A turn of a fusion model, such as VS Code's Auto, is queued before it is
+ * counted, since Copilot writes its tool calls after its stop.
+ */
+async function copilotStop(dir, sessionId, input, env, spawnWorker) {
+	const transcriptPath = input.transcriptPath;
+	if (typeof transcriptPath !== "string" || !path.isAbsolute(transcriptPath)) throw new Error("The hook input has no usable transcriptPath.");
+	// A subagent's stop names the subagent as sessionId, with the main agent's events file.
+	if (input.agentId !== undefined || path.basename(path.dirname(transcriptPath)) !== sessionId) return;
+	const saved = await readSessionState(dir, sessionId);
+	const options = loadOptions(env);
+	const size = await transcriptSize(transcriptPath);
+	if (saved === undefined || saved.offset > size) {
+		// Where the turn started is unknown, so it is not reviewed; the next turn starts here.
+		await writeSessionState(dir, sessionId, { offset: size, toolCalls: 0 });
+		if (options.autoCapture) await appendLog(dir, { event: "skip", session: sessionId, reason: "no saved state for the session", toolCalls: 0 });
+		return;
+	}
+	const turn = await readCopilotTurn(transcriptPath, saved.offset, input, { fusion: saved.fusion });
+	const { next, mode, stopId, fusion } = turn;
+	// A turn that another plugin's stop hook continues stops again, with stop_hook_active set, so its tool calls add up.
+	const toolCalls = (input.stop_hook_active === true ? saved.toolCalls : 0) + turn.toolCalls;
+	await writeSessionState(dir, sessionId, { offset: next, toolCalls, ...(fusion ? { fusion } : {}) });
+
+	if (!options.autoCapture) return;
+	const skip = (reason) => appendLog(dir, { event: "skip", session: sessionId, reason, toolCalls });
+	if (stopId === undefined) return skip("Copilot did not write the stop to the session's events file within 10 seconds");
+	if (!(await isAttendedSession(transcriptPath, env))) return skip("unattended session");
+	// Autopilot goes on without the user and stops after each step, so its steps are not reviewed.
+	if (mode === "plan" || mode === "autopilot") return skip(`${mode} mode`);
+	// A fusion turn's tool calls are written after its stop, so the capture worker counts them and applies minToolCalls.
+	if (fusion === undefined && toolCalls < options.minToolCalls) return skip(`fewer than ${options.minToolCalls} tool calls`);
+	await queueCapture(dir, {
+		host: "copilot",
+		sessionId,
+		transcriptPath,
+		end: next,
+		stopId,
+		...(fusion ? { fusion, toolCalls } : {}),
+		projectDir: env.COPILOT_PROJECT_DIR || input.cwd,
+	});
+	await appendLog(dir, { event: "queued", session: sessionId, toolCalls, ...(fusion ? { fusion: true } : {}) });
 	await spawnWorker(sessionId, env);
 }
 

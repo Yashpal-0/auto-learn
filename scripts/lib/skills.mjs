@@ -58,7 +58,8 @@ const SECRET_PATTERNS = [
  * call throws an Error whose message says what to change.
  *
  * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown, revision?: unknown}} args
- * @param {{skillsDir: string, projectDir?: string, host?: "claude" | "codex" | "opencode"}} context
+ * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, host?: "claude" | "codex" | "copilot" | "opencode"}} context
+ * `agentsSkillsDir` is the personal folder `create` also checks for a taken name, which GitHub Copilot reads next to its own.
  */
 export async function manageSkill(args, context) {
 	const { action, name: rawName, description, body, revision } = args ?? {};
@@ -202,7 +203,7 @@ async function createSkill(name, content, context) {
 	const projectSkills = await projectSkillsDir(context);
 	// A personal skill would shadow the project's skill of the same name.
 	const conflict = (context.host ?? "claude") === "claude" ? await claudeSkillConflict(name, context) :
-		projectSkills && (await entryType(path.join(projectSkills, name))) && path.join(projectSkills, name);
+		await existingSkill(name, [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir]);
 	if (conflict) {
 		throw new Error(`A skill named "${name}" already exists at ${displayPath(conflict)}. Pick another name.`);
 	}
@@ -227,6 +228,14 @@ async function createSkill(name, content, context) {
 		throw error;
 	}
 	return `Created skill "${name}" at ${displayPath(file)}.`;
+}
+
+/** The path of the first skill called `name` in `folders`, skipping the missing ones, or undefined. */
+async function existingSkill(name, folders) {
+	for (const folder of folders) {
+		if (folder && (await entryType(path.join(folder, name)))) return path.join(folder, name);
+	}
+	return undefined;
 }
 
 async function updateSkill(name, content, context, revision) {
@@ -335,9 +344,10 @@ async function gitPath(directory, flag) {
 
 /** The project's skills directory, or undefined when there is none or it is the personal library itself. */
 // shortcut: for Codex, checks the project's own .agents/skills only, while Codex also reads those of the folders up to the repository root; walk them when a learned skill shadows one there.
+// shortcut: for GitHub Copilot, checks the project's .github/skills (of the session's working folder) and ~/.agents/skills, while Copilot also reads the project's .agents/skills and .claude/skills and the .github/skills of the folders up to the repository root; check those too when a learned skill shadows one there.
 async function projectSkillsDir({ skillsDir, projectDir, host }) {
 	if (!projectDir) return undefined;
-	const folder = host === "opencode" ? ".opencode" : host === "codex" ? ".agents" : ".claude";
+	const folder = { opencode: ".opencode", codex: ".agents", copilot: ".github" }[host] ?? ".claude";
 	const dir = path.join(projectDir, folder, "skills");
 	const [project, personal] = await Promise.all([canonicalPath(dir), canonicalPath(skillsDir)]);
 	return project === personal ? undefined : dir;

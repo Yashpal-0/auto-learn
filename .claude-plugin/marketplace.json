@@ -1,6 +1,6 @@
 {
   "name": "auto-learn",
-  "description": "Skills that Claude Code, Codex and OpenCode learn from your own work.",
+  "description": "Skills that Claude Code, Codex, GitHub Copilot and OpenCode learn from your own work.",
   "owner": {
     "name": "Yashpal-0"
   },
@@ -8,7 +8,7 @@
     {
       "name": "auto-learn",
       "source": "./",
-      "description": "Saves procedures that worked as personal skills, which Claude Code, Codex and OpenCode offer in later sessions."
+      "description": "Saves procedures that worked as personal skills, which Claude Code, Codex, GitHub Copilot and OpenCode offer in later sessions."
     }
   ]
 }

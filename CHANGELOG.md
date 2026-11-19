@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-11-20
+
+- auto-learn now runs in GitHub Copilot CLI and in Copilot Chat on VS Code's Copilot agent host. Install it with `copilot plugin marketplace add Yashpal-0/auto-learn` and `copilot plugin install auto-learn@auto-learn`. Copilot reads the new `.github/plugin/plugin.json`, with its own hooks and MCP server, and saves skills to `~/.copilot/skills`.
+- In Copilot, a turn with enough tool calls, in the interactive mode, in a VS Code chat or Copilot CLI's interactive interface, is reviewed in a copy of the session through `copilot -p`, where `manage_skill` is the only tool the model can see. The copy is deleted through `copilot --headless` afterwards; the session itself is only read. The log records the review's AI credits and tokens.
+- Copilot: a turn in VS Code's Auto mode, where Copilot writes the turn's tool calls to the session only after the stop hook ran, is reviewed once Copilot has committed it. A turn that another plugin's stop hook asks Copilot to continue is reviewed at its last stop, with the tool calls of its stops added up; a turn Copilot interrupts is not reviewed.
+- Copilot: `manage_skill` refuses to create a skill whose name a skill in `~/.copilot/skills`, in `~/.agents/skills`, which Copilot also reads, or in the session folder's `.github/skills` already uses. It does not check the project's `.agents/skills` and `.claude/skills`. It cannot read, revision-check or lock a skill, so an update or delete applies to the skill as it is on disk, without checking whether it changed since the model read it.
+- Copilot does not pass `COPILOT_PROVIDER_*` or `COPILOT_OFFLINE` to hooks, so a session on your own model provider is reviewed on your Copilot sign-in. The README's Privacy section says so.
+- Claude Code, Codex and OpenCode behave as before.
+
 ## 0.3.1 - 2026-11-16
 
 - Claude Code: `manage_skill` can read a managed skill's full text and revision. Updates and deletes require that revision and refuse stale copies, so a review cannot silently replace another session's saved steps. Exclusive locks serialize changes across MCP processes. Existing skill files need no conversion; callers must read before updating or deleting.

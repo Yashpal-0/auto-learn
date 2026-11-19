@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The auto-learn MCP server: newline-delimited JSON-RPC 2.0 on stdin and
-// stdout. `mcp-server.mjs` serves Claude Code, `mcp-server.mjs --host=codex` Codex.
+// stdout. `mcp-server.mjs` serves Claude Code, `mcp-server.mjs --host=codex`
+// Codex and `mcp-server.mjs --host=copilot` GitHub Copilot.
 import readline from "node:readline";
 import { parseHost, skillsDir } from "./lib/config.mjs";
 import { createMcpServer } from "./lib/mcp.mjs";
@@ -12,11 +13,13 @@ try {
 	process.stderr.write(`auto-learn: ${error.message}\n`);
 	process.exit(1);
 }
-// Codex starts the server in the plugin's folder and names each call's project in the call itself.
+// Codex starts the server in the plugin's folder and names each call's project in the call itself; Copilot names the session's folder in COPILOT_SESSION_CWD, and reads ~/.agents/skills, Codex's folder, besides its own.
 const handle =
 	host === "codex"
 		? createMcpServer({ skillsDir: skillsDir(process.env, host), host })
-		: createMcpServer({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
+		: host === "copilot"
+			? createMcpServer({ skillsDir: skillsDir(process.env, host), projectDir: process.env.COPILOT_SESSION_CWD || undefined, agentsSkillsDir: skillsDir({}, "codex"), host })
+			: createMcpServer({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
 
 function write(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
