@@ -8,7 +8,7 @@
 //       refused  one manage_skill call that fails, and a call to a hidden tool
 //       exit     exit with an error
 //       hang     never exit
-//       stubborn never exit, and ignores SIGTERM
+//       stubborn ignores SIGTERM, and exits on its own after 5 seconds
 //       polite   never exit, but exits with 0 on SIGTERM
 //   copilot --headless --stdio   answers JSON-RPC with Content-Length framing:
 //     sends a notification and asks the client something before it connects,
@@ -47,7 +47,10 @@ function review() {
 		process.exit(3);
 	}
 	if (mode === "hang" || mode === "stubborn" || mode === "polite") {
-		if (mode === "stubborn") process.on("SIGTERM", () => {});
+		if (mode === "stubborn") {
+			process.on("SIGTERM", () => {});
+			setTimeout(() => process.exit(0), 5000);
+		}
 		if (mode === "polite") process.on("SIGTERM", () => process.exit(0));
 		setInterval(() => {}, 1000);
 		return;

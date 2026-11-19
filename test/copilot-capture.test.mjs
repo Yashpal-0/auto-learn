@@ -359,10 +359,15 @@ test("captureCopilotTurn skips a malformed job and a gone project, and stops wai
 test("runCopilotFork kills a review that ignores SIGTERM, and reports a stopped review that exits cleanly as stopped", { timeout: 30000 }, async (t) => {
 	const run = async (mode) => {
 		const w = await world(t, mode);
-		return runCopilotFork({ forkId: SESSION, cwd: w.job.projectDir, env: w.env, timeoutMs: 300, killGraceMs: 300 });
+		const started = Date.now();
+		const result = await runCopilotFork({ forkId: SESSION, cwd: w.job.projectDir, env: w.env, timeoutMs: 300, killGraceMs: 300 });
+		return [result, Date.now() - started];
 	};
-	assert.deepEqual(await run("stubborn"), { outcome: "timeout" });
-	assert.deepEqual(await run("polite"), { outcome: "timeout" });
+	// The stubborn fake gives up by itself after 5 seconds, which is when a review that is never killed would end.
+	const [stubborn, took] = await run("stubborn");
+	assert.deepEqual(stubborn, { outcome: "timeout" });
+	assert.ok(took < 3000, `a review that ignores SIGTERM is killed when the grace period ends, not when it exits (${took} ms)`);
+	assert.deepEqual((await run("polite"))[0], { outcome: "timeout" });
 });
 
 test("runCopilotFork stops a review that runs too long or is aborted", async (t) => {
