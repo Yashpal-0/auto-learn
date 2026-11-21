@@ -14,12 +14,12 @@ try {
 	process.exit(1);
 }
 // Codex starts the server in the plugin's folder and names each call's project in the call itself; Copilot names the session's folder in COPILOT_SESSION_CWD, and reads ~/.agents/skills, Codex's folder, besides its own.
-const handle =
-	host === "codex"
-		? createMcpServer({ skillsDir: skillsDir(process.env, host), host })
-		: host === "copilot"
-			? createMcpServer({ skillsDir: skillsDir(process.env, host), projectDir: process.env.COPILOT_SESSION_CWD || undefined, agentsSkillsDir: skillsDir({}, "codex"), host })
-			: createMcpServer({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
+const contexts = {
+	codex: () => ({ skillsDir: skillsDir(process.env, host), host }),
+	copilot: () => ({ skillsDir: skillsDir(process.env, host), projectDir: process.env.COPILOT_SESSION_CWD || undefined, agentsSkillsDir: skillsDir({}, "codex"), host }),
+	claude: () => ({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() }),
+};
+const handle = createMcpServer(contexts[host]());
 
 function write(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
