@@ -2,20 +2,26 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { REVIEW_AGENT } from "../scripts/lib/agy.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const readJson = (file) => JSON.parse(readFileSync(path.join(ROOT, file), "utf8"));
 const EVENTS = { SessionStart: "session-start", Stop: "stop", SessionEnd: "session-end" };
+/** The only fields agy keeps of a plugin manifest; it drops any other without a word. */
+const AGY_MANIFEST_FIELDS = ["name", "description", "displayName", "version", "author", "homepage", "repository", "logo", "suggestedPrompts", "disabled"];
 
 /** Each hook's event and command, from a hooks file. */
 const hookCommands = (file) =>
 	Object.entries(readJson(file).hooks).flatMap(([event, groups]) => groups.flatMap((group) => group.hooks.map((hook) => [event, hook.command])));
 
-test("the Claude Code, Codex, GitHub Copilot and OpenCode manifests name the same plugin at the same version", () => {
+test("the Claude Code, Codex, GitHub Copilot, Antigravity CLI and OpenCode manifests name the same plugin at the same version", () => {
 	const claude = readJson(".claude-plugin/plugin.json");
 	const codex = readJson(".codex-plugin/plugin.json");
 	const copilot = readJson(".github/plugin/plugin.json");
+	const agy = readJson(".antigravity-plugin/plugin.json");
 	const opencode = readJson("package.json");
+	assert.equal(agy.name, claude.name);
+	assert.equal(agy.version, claude.version);
 	assert.equal(codex.name, claude.name);
 	assert.equal(codex.version, claude.version);
 	assert.equal(copilot.name, claude.name);
@@ -60,6 +66,45 @@ test("GitHub Copilot runs the hooks and the MCP server from copilot/, each with 
 	assert.deepEqual([server.type, server.command, server.args], ["stdio", "node", ["${PLUGIN_ROOT}/scripts/mcp-server.mjs", "--host=copilot"]]);
 	// Copilot loads a root .mcp.json or a .github/mcp.json in place of the manifest's mcpServers.
 	assert.equal(existsSync(path.join(ROOT, ".github", "mcp.json")), false);
+});
+
+test("Antigravity CLI runs the hooks and the MCP server from files at the repository root, each with --host=agy", () => {
+	const manifest = readJson(".antigravity-plugin/plugin.json");
+	for (const field of Object.keys(manifest)) assert.ok(AGY_MANIFEST_FIELDS.includes(field), `agy would drop the manifest field ${field}`);
+	assert.equal(typeof manifest.displayName, "string");
+
+	// agy runs a hook with the folder that holds hooks.json as its working directory, and sets no variable that expands in the command.
+	const hooks = readJson("hooks.json");
+	assert.deepEqual(Object.keys(hooks), ["auto-learn"]);
+	const { enabled, ...events } = hooks["auto-learn"];
+	assert.equal(enabled, true);
+	// PreToolUse is never registered: a hook that prints {} there denies the tool.
+	assert.deepEqual(events, {
+		SessionStart: [{ type: "command", command: "node ./scripts/hook.mjs session-start --host=agy", timeout: 10 }],
+		Stop: [{ type: "command", command: "node ./scripts/hook.mjs stop --host=agy", timeout: 30 }],
+	});
+	assert.ok(existsSync(path.join(ROOT, "scripts", "hook.mjs")));
+
+	// A server variable would switch the plugin off until a form is filled in.
+	assert.deepEqual(readJson("mcp_config.json"), {
+		mcpServers: { "auto-learn": { command: "node", args: ["${PLUGIN_ROOT}/scripts/mcp-server.mjs", "--host=agy"], tools: { manage_skill: { eager: true } } } },
+	});
+	// Copilot CLI would prefer a root plugin.json over .github/plugin/plugin.json.
+	assert.equal(existsSync(path.join(ROOT, "plugin.json")), false);
+});
+
+test("the Antigravity CLI review agent is the one the runner asks for, is closed to every tool but the plugin's, and is no agent to delegate to", () => {
+	const text = readFileSync(path.join(ROOT, "agents", `${REVIEW_AGENT}.md`), "utf8");
+	const [, head, body] = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
+	const fields = Object.fromEntries(head.split("\n").map((line) => [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1).trim()]));
+	assert.deepEqual(
+		{ ...fields, description: undefined },
+		{ name: REVIEW_AGENT, description: undefined, mainAgent: "true", subagent: "false", tools: "[]", inheritMcp: "false" },
+	);
+	// Claude Code lists a plugin's agents as subagents, and Copilot CLI may offer them.
+	assert.match(fields.description, /internal/i);
+	assert.match(fields.description, /not for delegat/i);
+	assert.match(body, /manage_skill/);
 });
 
 test("every prompt has a GitHub Copilot version", () => {

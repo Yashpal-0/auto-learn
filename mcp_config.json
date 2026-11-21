@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "auto-learn": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/mcp-server.mjs", "--host=agy"],
+      "tools": {
+        "manage_skill": {
+          "eager": true
+        }
+      }
+    }
+  }
+}
