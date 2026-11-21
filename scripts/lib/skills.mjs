@@ -374,6 +374,7 @@ async function gitPath(directory, flag) {
 /** The project's skills directory, or undefined when there is none or it is the personal library itself. */
 // shortcut: for Codex, checks the project's own .agents/skills only, while Codex also reads those of the folders up to the repository root; walk them when a learned skill shadows one there.
 // shortcut: for GitHub Copilot, checks the project's .github/skills (of the session's working folder) and ~/.agents/skills, while Copilot also reads the project's .agents/skills and .claude/skills and the .github/skills of the folders up to the repository root; check those too when a learned skill shadows one there.
+// shortcut: for agy, checks the project's own .agents/skills and the builtin skills, while agy also reads the project's .agent, _agents and _agent folders, those of the folders up to the git root, and the skills that workspace and global skills.json and plugins.json files declare; check those too when a learned skill shadows one there.
 async function projectSkillsDir({ skillsDir, projectDir, host }) {
 	if (!projectDir) return undefined;
 	const folder = { opencode: ".opencode", codex: ".agents", copilot: ".github", agy: ".agents" }[host] ?? ".claude";
