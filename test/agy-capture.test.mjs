@@ -458,6 +458,16 @@ test("runAgyReview kills a review that ignores SIGTERM, and everything it starte
 	await assertGone(grandchild);
 });
 
+test("a review that ends by itself leaves nothing running that it started", { timeout: 30000 }, async (t) => {
+	const w = await world(t, "ok");
+	w.env.FAKE_AGY_LEAVE_CHILD = "1";
+	const result = await runAgyReview({ prompt: "x", cwd: w.root, env: w.env });
+	const { grandchild } = await w.until((entry) => entry.grandchild);
+	t.after(() => killQuietly(grandchild));
+	assert.equal(result.outcome, "ok");
+	await assertGone(grandchild);
+});
+
 test("a failure before agy runs is an error, and agy does not run", async (t) => {
 	const w = await world(t, "ok");
 	await fs.writeFile(path.join(w.root, "not-a-folder"), "");

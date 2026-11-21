@@ -187,8 +187,8 @@ export function runAgyReview({ prompt, cwd, env, signal, timeoutMs = CAPTURE_TIM
 		};
 		child.once("error", (error) => finish({ outcome: "error", error: error.code === "ENOENT" ? "the agy CLI was not found on PATH" : error.message }));
 		child.once("close", (code, exitSignal) => {
-			// A stopped review leaves nothing of its process group running, whether or not its main process obeyed.
-			if (stopped) killGroup(child, "SIGKILL");
+			// A review leaves nothing of its process group running, however it ended and whether or not its main process obeyed.
+			killGroup(child, "SIGKILL");
 			const summary = analyzer.finish();
 			finish(endOf(summary, stopped, code ?? exitSignal, stderr), summary);
 		});

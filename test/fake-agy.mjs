@@ -6,7 +6,9 @@
 // $HOME/.gemini, then reviews as $FAKE_AGY_MODE says:
 //   ok        a junk line, then one manage_skill call that saves a skill, and a successful result, all
 //             after $FAKE_AGY_DELAY milliseconds (default none) and once the file $FAKE_AGY_GATE exists, if
-//             that is set; with $FAKE_AGY_EAGER set the call is reported as agy reports an eager tool
+//             that is set; with $FAKE_AGY_EAGER set the call is reported as agy reports an eager tool;
+//             with $FAKE_AGY_LEAVE_CHILD set it also starts a child that ignores SIGTERM and outlives it
+//             (recorded as {grandchild})
 //   refused   a manage_skill call that agy denied: the call is DONE without output, the result lists
 //             $FAKE_AGY_DENIED denials (default 1)
 //   failed    the result in $FAKE_AGY_RESULT (JSON, default {"status":"ERROR"}) and exit status 3
@@ -75,6 +77,7 @@ async function review() {
 	const giveUp = Date.now() + 30_000;
 	while (process.env.FAKE_AGY_GATE && !existsSync(process.env.FAKE_AGY_GATE) && Date.now() < giveUp) await new Promise((resolve) => setTimeout(resolve, 20));
 	await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_AGY_DELAY ?? 0)));
+	if (process.env.FAKE_AGY_LEAVE_CHILD) record({ grandchild: await spawnSigtermIgnoringChild() });
 	const usage = (input, cacheRead) => ({ input, output: 5, cacheRead });
 	const save = { action: "create", name: "fake-skill", description: "Use when testing the fake", body: "1. Do it." };
 	process.stdout.write("WARN: not an event\n");
@@ -100,14 +103,22 @@ function hang() {
 	idle();
 }
 
-// Starts a child that ignores SIGTERM, as an MCP server might, and prints the init once it does: a signal sent
-// before then would find the child with its default handling and end it. The tests wait for the record.
-async function startChild() {
+// Starts a child that ignores SIGTERM, as an MCP server might, and returns its pid once it does: a signal sent
+// before then would find the child with its default handling and end it.
+async function spawnSigtermIgnoringChild() {
 	const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "ignore"] });
 	await new Promise((resolve) => child.stdout.once("data", resolve));
 	child.stdout.destroy();
+	// Not unref'd, the child would keep the fake from exiting by itself.
+	child.unref();
+	return child.pid;
+}
+
+// Prints the init once the child runs. The tests wait for the record.
+async function startChild() {
+	const grandchild = await spawnSigtermIgnoringChild();
 	emit(agyStream.init({}, conversationId));
-	record({ ready: true, grandchild: child.pid });
+	record({ ready: true, grandchild });
 }
 
 function stubborn() {
