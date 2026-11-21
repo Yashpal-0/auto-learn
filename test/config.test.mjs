@@ -45,10 +45,16 @@ test("GitHub Copilot's skill library is skills in COPILOT_HOME, ~/.copilot by de
 	assert.equal(skillsDir({ COPILOT_HOME: "/copilot", AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "copilot"), path.resolve("/elsewhere"));
 });
 
-test("the host is Claude Code without arguments, Codex with --host=codex and GitHub Copilot with --host=copilot; anything else is refused", () => {
+test("Antigravity CLI's skill library is ~/.gemini/config/skills, which agy discovers, unless AUTO_LEARN_SKILLS_DIR names one", () => {
+	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg", XDG_CONFIG_HOME: "/xdg" }, "agy"), path.join(os.homedir(), ".gemini", "config", "skills"));
+	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "agy"), path.resolve("/elsewhere"));
+});
+
+test("the host is Claude Code without arguments, Codex with --host=codex, GitHub Copilot with --host=copilot and Antigravity CLI with --host=agy; anything else is refused", () => {
 	assert.equal(parseHost([]), "claude");
 	assert.equal(parseHost(["--host=codex"]), "codex");
 	assert.equal(parseHost(["--host=copilot"]), "copilot");
+	assert.equal(parseHost(["--host=agy"]), "agy");
 	for (const args of [["--host=claude"], ["--host", "codex"], ["--host=codex", "extra"], ["codex"], ["--host=opencode"]]) {
 		assert.throws(() => parseHost(args), /Unknown arguments/, JSON.stringify(args));
 	}
@@ -57,6 +63,16 @@ test("the host is Claude Code without arguments, Codex with --host=codex and Git
 test("plugin state lives in CLAUDE_PLUGIN_DATA", () => {
 	assert.equal(dataDir({ CLAUDE_PLUGIN_DATA: "/plugin-data" }), path.resolve("/plugin-data"));
 	assert.equal(dataDir({ CLAUDE_CONFIG_DIR: "/cfg" }), path.resolve("/cfg/auto-learn"));
+});
+
+test("Antigravity CLI's plugin state lives in the PLUGIN_DATA that agy sets, else under ~/.gemini/antigravity-cli/plugin_data", () => {
+	const fallback = path.join(os.homedir(), ".gemini", "antigravity-cli", "plugin_data", "auto-learn");
+	assert.equal(dataDir({ PLUGIN_DATA: "/agy-data" }, "agy"), path.resolve("/agy-data"));
+	assert.equal(dataDir({}, "agy"), fallback);
+	// The variables of the other hosts never move it, and agy's own does not move theirs.
+	assert.equal(dataDir({ CLAUDE_PLUGIN_DATA: "/claude-data", CLAUDE_CONFIG_DIR: "/cfg" }, "agy"), fallback);
+	assert.equal(dataDir({ PLUGIN_DATA: "/agy-data", CLAUDE_CONFIG_DIR: "/cfg" }), path.resolve("/cfg/auto-learn"));
+	assert.equal(dataDir({ PLUGIN_DATA: "/agy-data", CLAUDE_PLUGIN_DATA: "/claude-data" }, "copilot"), path.resolve("/claude-data"));
 });
 
 test("displayPath shows the home directory as ~", () => {

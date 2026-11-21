@@ -9,7 +9,7 @@ const MAX_LISTING_CHARS = 4000;
 const PREVIEW_CHARS = 160;
 const MIN_SENTENCE_CHARS = 40;
 
-/** @param {"claude" | "codex" | "copilot" | "opencode"} host */
+/** @param {"claude" | "codex" | "copilot" | "opencode" | "agy"} host */
 function template(name, host) {
 	const folder = host === "claude" ? "" : `${host}/`;
 	return readFileSync(new URL(`../../prompts/${folder}${name}.md`, import.meta.url), "utf8");

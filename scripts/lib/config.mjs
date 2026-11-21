@@ -34,14 +34,14 @@ function parseCount(raw) {
 }
 
 /** The agents named by `--host=<name>`; Claude Code is the one that gets no argument. */
-const FLAG_HOSTS = ["codex", "copilot"];
+const FLAG_HOSTS = ["codex", "copilot", "agy"];
 
 /**
  * The agent a hook or the MCP server runs for, from its command-line
  * arguments: none for Claude Code, `--host=codex` for Codex, `--host=copilot`
- * for GitHub Copilot.
+ * for GitHub Copilot, `--host=agy` for Antigravity CLI.
  *
- * @returns {"claude" | "codex" | "copilot"}
+ * @returns {"claude" | "codex" | "copilot" | "agy"}
  */
 export function parseHost(args) {
 	if (args.length === 0) return "claude";
@@ -60,15 +60,30 @@ export function copilotHome(env = process.env) {
 	return path.resolve(env.COPILOT_HOME || path.join(os.homedir(), ".copilot"));
 }
 
+/** Antigravity CLI's configuration folder, shared with the Antigravity app and IDE, which holds its personal skills and installed plugins. */
+function agyConfigDir() {
+	return path.join(os.homedir(), ".gemini", "config");
+}
+
+/**
+ * The skill folders that ship inside Antigravity CLI and the Antigravity app.
+ * A personal skill of the same name replaces a builtin one, so none may take such a name.
+ */
+export function agyBuiltinSkillsDirs() {
+	const gemini = path.join(os.homedir(), ".gemini");
+	return [path.join(gemini, "antigravity-cli", "builtin", "skills"), path.join(gemini, "antigravity", "builtin", "skills")];
+}
+
 /**
  * The personal skills directory the agent discovers, which holds the managed
- * skills: ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills, or
- * $XDG_CONFIG_HOME/opencode/skills.
+ * skills: ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills,
+ * ~/.gemini/config/skills, or $XDG_CONFIG_HOME/opencode/skills.
  */
 export function skillsDir(env = process.env, host = "claude") {
 	if (env.AUTO_LEARN_SKILLS_DIR) return path.resolve(env.AUTO_LEARN_SKILLS_DIR);
 	if (host === "opencode") return path.resolve(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode", "skills");
 	if (host === "copilot") return path.join(copilotHome(env), "skills");
+	if (host === "agy") return path.join(agyConfigDir(), "skills");
 	return path.resolve(host === "codex" ? path.join(os.homedir(), ".agents", "skills") : path.join(claudeConfigDir(env), "skills"));
 }
 
@@ -77,8 +92,13 @@ export function claudeUserSettingsFile(env = process.env) {
 	return path.join(claudeConfigDir(env), "settings.json");
 }
 
-/** Plugin state: the capture queue, locks, turn offsets and the activity log. */
-export function dataDir(env = process.env) {
+/**
+ * Plugin state: the capture queue, locks, turn offsets and the activity log.
+ * Antigravity CLI gives its hooks PLUGIN_DATA, in its own store, and no
+ * CLAUDE_PLUGIN_DATA; the other hosts' variables never apply to it.
+ */
+export function dataDir(env = process.env, host = "claude") {
+	if (host === "agy") return path.resolve(env.PLUGIN_DATA || path.join(os.homedir(), ".gemini", "antigravity-cli", "plugin_data", "auto-learn"));
 	return path.resolve(env.CLAUDE_PLUGIN_DATA || path.join(claudeConfigDir(env), "auto-learn"));
 }
 

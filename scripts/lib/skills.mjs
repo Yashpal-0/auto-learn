@@ -58,8 +58,9 @@ const SECRET_PATTERNS = [
  * call throws an Error whose message says what to change.
  *
  * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown, revision?: unknown}} args
- * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, host?: "claude" | "codex" | "copilot" | "opencode"}} context
+ * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, builtinSkillsDirs?: string[], host?: "claude" | "codex" | "copilot" | "opencode" | "agy"}} context
  * `agentsSkillsDir` is the personal folder `create` also checks for a taken name, which GitHub Copilot reads next to its own.
+ * `builtinSkillsDirs` are the folders of the skills that ship with the agent, which `create` also checks, since a personal skill of the same name replaces one.
  */
 export async function manageSkill(args, context) {
 	const { action, name: rawName, description, body, revision } = args ?? {};
@@ -203,7 +204,7 @@ async function createSkill(name, content, context) {
 	const projectSkills = await projectSkillsDir(context);
 	// A personal skill would shadow the project's skill of the same name.
 	const conflict = (context.host ?? "claude") === "claude" ? await claudeSkillConflict(name, context) :
-		await existingSkill(name, [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir]);
+		await existingSkill(name, [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir, ...(context.builtinSkillsDirs ?? [])]);
 	if (conflict) {
 		throw new Error(`A skill named "${name}" already exists at ${displayPath(conflict)}. Pick another name.`);
 	}
@@ -347,7 +348,7 @@ async function gitPath(directory, flag) {
 // shortcut: for GitHub Copilot, checks the project's .github/skills (of the session's working folder) and ~/.agents/skills, while Copilot also reads the project's .agents/skills and .claude/skills and the .github/skills of the folders up to the repository root; check those too when a learned skill shadows one there.
 async function projectSkillsDir({ skillsDir, projectDir, host }) {
 	if (!projectDir) return undefined;
-	const folder = { opencode: ".opencode", codex: ".agents", copilot: ".github" }[host] ?? ".claude";
+	const folder = { opencode: ".opencode", codex: ".agents", copilot: ".github", agy: ".agents" }[host] ?? ".claude";
 	const dir = path.join(projectDir, folder, "skills");
 	const [project, personal] = await Promise.all([canonicalPath(dir), canonicalPath(skillsDir)]);
 	return project === personal ? undefined : dir;

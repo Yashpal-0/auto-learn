@@ -126,6 +126,25 @@ test("for GitHub Copilot, create also refuses a name in ~/.agents/skills, which 
 	assert.match(await create({ ...context, agentsSkillsDir }, "deploy-docs"), /^Created skill/);
 });
 
+test("for Antigravity CLI, create refuses a name a project skill in .agents/skills uses, and not one in .claude/skills", async (t) => {
+	const { context } = await library(t);
+	const agy = { ...context, host: "agy" };
+	await authoredSkill(path.join(context.projectDir, ".claude", "skills"), "claude-only");
+	await authoredSkill(path.join(context.projectDir, ".agents", "skills"), "deploy-docs");
+	await assert.rejects(create(agy, "deploy-docs"), /another name/);
+	assert.match(await create(agy, "claude-only"), /^Created skill/);
+});
+
+test("for Antigravity CLI, create also refuses the name of a builtin skill, which a personal skill of that name would replace", async (t) => {
+	const { root, context } = await library(t);
+	const builtin = path.join(root, "builtin-skills");
+	await authoredSkill(builtin, "plugin");
+	const agy = { ...context, host: "agy", builtinSkillsDirs: [path.join(root, "no-such-folder"), builtin] };
+	await assert.rejects(create(agy, "plugin"), /already exists at .*builtin-skills.*another name/);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "plugin")));
+	assert.match(await create(agy, "ship-docs"), /^Created skill/);
+});
+
 test("for OpenCode, create refuses a name a project skill in .opencode/skills uses", async (t) => {
 	const { context } = await library(t);
 	await authoredSkill(path.join(context.projectDir, ".opencode", "skills"), "deploy-docs");

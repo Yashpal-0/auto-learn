@@ -205,6 +205,47 @@ test("the server script serves GitHub Copilot with --host=copilot: its skill lib
 	child.stdin.end();
 });
 
+test("the Antigravity CLI server describes the tool for Antigravity and offers no read action", async (t) => {
+	const root = await tempDir(t);
+	const handle = createMcpServer({ skillsDir: path.join(root, "skills"), host: "agy" });
+	const [tool] = (await handle({ jsonrpc: "2.0", id: 1, method: "tools/list" })).result.tools;
+	assert.match(tool.description, /Antigravity/);
+	assert.match(tool.inputSchema.properties.description.description, /Antigravity matches tasks against it/);
+	assert.deepEqual(tool.inputSchema.properties.action.enum, ["create", "update", "delete"]);
+	assert.equal(tool.inputSchema.properties.revision, undefined);
+	assert.doesNotMatch(JSON.stringify(tool), /Claude|Codex|Copilot/);
+});
+
+test("the server script serves Antigravity CLI with --host=agy: its skill library, AUTO_LEARN_PROJECT_DIR as the project, and its builtin skills as taken names", async (t) => {
+	const root = await tempDir(t);
+	const home = path.join(root, "home");
+	const projectDir = path.join(root, "project");
+	const authored = async (dir, name) => {
+		await fs.mkdir(path.join(dir, name), { recursive: true });
+		await fs.writeFile(path.join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: Not ours\n---\n\nSteps.\n`);
+	};
+	await authored(path.join(projectDir, ".agents", "skills"), "deploy-docs");
+	await authored(path.join(home, ".gemini", "antigravity-cli", "builtin", "skills"), "plugin");
+	await authored(path.join(home, ".gemini", "antigravity", "builtin", "skills"), "app-only");
+	const env = { ...process.env, HOME: home, USERPROFILE: home, AUTO_LEARN_PROJECT_DIR: projectDir };
+	delete env.AUTO_LEARN_SKILLS_DIR;
+	// agy starts the server with its own working directory, which names no project.
+	const child = spawn(process.execPath, [SERVER_SCRIPT, "--host=agy"], { cwd: root, env, stdio: ["pipe", "pipe", "inherit"] });
+	// A failed assertion skips closing stdin, and the running server would keep the test from ending.
+	t.after(() => child.kill());
+	const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+	const ask = async (id, args) => {
+		child.stdin.write(`${JSON.stringify(call(id, args))}\n`);
+		return JSON.parse((await replies.next()).value).result.content[0].text;
+	};
+	assert.match(await ask(1, createArgs), /another name/);
+	assert.match(await ask(2, { ...createArgs, name: "plugin" }), /another name/);
+	assert.match(await ask(3, { ...createArgs, name: "app-only" }), /another name/);
+	assert.match(await ask(4, { ...createArgs, name: "ship-docs" }), /^Created skill/);
+	await fs.access(path.join(home, ".gemini", "config", "skills", "ship-docs", "SKILL.md"));
+	child.stdin.end();
+});
+
 test("the server script speaks JSON-RPC over stdio and exits when stdin closes", async (t) => {
 	const root = await tempDir(t);
 	const child = spawn(process.execPath, [SERVER_SCRIPT], {

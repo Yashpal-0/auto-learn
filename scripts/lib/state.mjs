@@ -56,10 +56,11 @@ async function exists(file) {
 
 /**
  * Where the session's next turn starts in its transcript, with the prompt id
- * and tool call count of the turn that stopped last, and for Copilot the id of
- * the fusion turn still open at that stop, or undefined when nothing is saved.
+ * and tool call count of the turn that stopped last, for Copilot the id of
+ * the fusion turn still open at that stop, and for Antigravity CLI whether a
+ * capture of that turn is queued, or undefined when nothing is saved.
  *
- * @returns {Promise<{offset: number, promptId?: string, toolCalls: number, fusion?: string} | undefined>}
+ * @returns {Promise<{offset: number, promptId?: string, toolCalls: number, fusion?: string, queued?: true} | undefined>}
  */
 export async function readSessionState(dataDir, sessionId) {
 	const value = await readJson(sessionFile(dataDir, "sessions", sessionId, ".json"));
@@ -68,11 +69,12 @@ export async function readSessionState(dataDir, sessionId) {
 		offset: value.offset,
 		...(typeof value.promptId === "string" ? { promptId: value.promptId } : {}),
 		...(typeof value.fusion === "string" && value.fusion !== "" ? { fusion: value.fusion } : {}),
+		...(value.queued === true ? { queued: true } : {}),
 		toolCalls: Number.isSafeInteger(value.toolCalls) && value.toolCalls >= 0 ? value.toolCalls : 0,
 	};
 }
 
-/** @param {{offset: number, promptId?: string, toolCalls: number, fusion?: string}} state */
+/** @param {{offset: number, promptId?: string, toolCalls: number, fusion?: string, queued?: true}} state */
 export async function writeSessionState(dataDir, sessionId, state) {
 	await writeJson(sessionFile(dataDir, "sessions", sessionId, ".json"), state);
 }
@@ -91,11 +93,40 @@ export async function forgetSession(dataDir, sessionId) {
 }
 
 /**
+ * Forgets the sessions whose state was last written more than `maxAgeMs` ago,
+ * with their queued captures. A host with no session-end hook never forgets a
+ * session itself.
+ */
+export async function pruneSessions(dataDir, maxAgeMs, now = Date.now()) {
+	const folder = path.join(dataDir, "sessions");
+	let names;
+	try {
+		names = await fs.readdir(folder);
+	} catch (error) {
+		if (error.code === "ENOENT") return;
+		throw error;
+	}
+	for (const name of names) {
+		const sessionId = name.slice(0, -".json".length);
+		if (!name.endsWith(".json") || !isValidSessionId(sessionId)) continue;
+		let stats;
+		try {
+			stats = await fs.stat(path.join(folder, name));
+		} catch (error) {
+			// Forgotten by the session's own host in the meantime.
+			if (error.code === "ENOENT") continue;
+			throw error;
+		}
+		if (now - stats.mtimeMs > maxAgeMs) await forgetSession(dataDir, sessionId);
+	}
+}
+
+/**
  * Queues a capture of the turn that ended when the transcript was `job.end`
  * bytes long. Captures run in the order their turns ended. A Codex job names
  * its turn by id instead of by where it starts.
  *
- * @param {{host?: "codex" | "copilot", sessionId: string, transcriptPath: string, start?: number, end: number, turnId?: string, stopId?: string, fusion?: string, toolCalls?: number, projectDir?: string, model?: string, modelProvider?: string, effort?: string}} job
+ * @param {{host?: "codex" | "copilot" | "agy", sessionId: string, transcriptPath: string, start?: number, end: number, turnId?: string, stopId?: string, fusion?: string, toolCalls?: number, projectDir?: string, model?: string, modelProvider?: string, effort?: string}} job
  */
 export async function queueCapture(dataDir, job) {
 	if (!Number.isSafeInteger(job.end) || job.end < 0) throw new Error(`Refusing to queue a capture at transcript offset ${job.end}.`);

@@ -66,6 +66,10 @@ test("every prompt has a GitHub Copilot version", () => {
 	assert.deepEqual(readdirSync(path.join(ROOT, "prompts", "copilot")).sort(), readdirSync(path.join(ROOT, "prompts")).filter((name) => name.endsWith(".md")).sort());
 });
 
+test("every prompt has an Antigravity CLI version", () => {
+	assert.deepEqual(readdirSync(path.join(ROOT, "prompts", "agy")).sort(), readdirSync(path.join(ROOT, "prompts")).filter((name) => name.endsWith(".md")).sort());
+});
+
 test("every prompt has a Codex version", () => {
 	assert.deepEqual(readdirSync(path.join(ROOT, "prompts", "codex")).sort(), readdirSync(path.join(ROOT, "prompts")).filter((name) => name.endsWith(".md")).sort());
 });
