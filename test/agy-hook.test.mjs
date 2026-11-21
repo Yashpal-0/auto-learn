@@ -199,7 +199,6 @@ test("an agy stop that is no turn to review queues nothing, and logs why where a
 		["plan mode with nothing typed after /plan", {}, { input: { lastUserInput: "/plan" } }, [["skip", "plan mode", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
 		["a subagent's stop, which has no user input", {}, { input: { lastUserInput: "" } }, [], started],
 		["a stop with no user input at all", {}, { input: { lastUserInput: undefined } }, [], started],
-		["a stop while a subagent still runs", {}, { input: { fullyIdle: false } }, [], started],
 		["a review's own session", { env: { AUTO_LEARN_CAPTURE: "1" } }, {}, [], undefined],
 		["autoCapture off", { env: { CLAUDE_PLUGIN_OPTION_AUTOCAPTURE: "false" } }, {}, [], started],
 		["a script run", { isAttended: async () => false }, {}, [["skip", "unattended session", undefined]], started],
@@ -217,19 +216,20 @@ test("an agy stop that is no turn to review queues nothing, and logs why where a
 	}
 });
 
-test("a turn that used a subagent is queued once, at the stop that the subagent's report provokes in the main conversation", async (t) => {
+// agy sets fullyIdle to false while background tasks run: a subagent, but also a command left running, such as a dev server, which no later stop need follow.
+test("a turn is queued at its first qualifying stop, also while agy still runs background tasks, and the later stops of the turn are skipped", async (t) => {
 	const s = await agySession(t);
 	await s.run("session-start");
 	await s.append(agyTurn(0, 5));
 	await s.run("stop", { fullyIdle: false });
-	await s.run("stop", { lastUserInput: "" });
-	assert.deepEqual(s.workers, []);
-	assert.deepEqual(await s.log(), []);
-
-	await s.run("stop");
 	assert.deepEqual(s.workers, [[SESSION, "agy"]]);
 	assert.equal((await s.job()).toolCalls, 5);
+
+	await s.run("stop", { lastUserInput: "" });
+	await s.run("stop");
+	assert.deepEqual(s.workers, [[SESSION, "agy"]]);
 	assert.equal(await s.job(), undefined);
+	assert.deepEqual(await s.skips(), [["queued", undefined, 5], ["skip", "already queued", 5]]);
 });
 
 test("a turn that reaches the minimum at a later stop is queued then, and a prompt that only starts like /plan is no plan", async (t) => {
@@ -247,7 +247,7 @@ test("a turn that reaches the minimum at a later stop is queued then, and a prom
 	assert.deepEqual(await s.skips(), [["skip", "fewer than 5 tool calls", 4], ["queued", undefined, 5]]);
 });
 
-test("a stop that does not say whether agy is idle is taken as idle, and one before the transcript holds a prompt is skipped and looked at again", async (t) => {
+test("a stop before the transcript holds a prompt is skipped and looked at again", async (t) => {
 	const s = await agySession(t);
 	await s.run("session-start");
 	await s.run("stop");
@@ -256,7 +256,7 @@ test("a stop that does not say whether agy is idle is taken as idle, and one bef
 	assert.deepEqual(await s.state(), { offset: 0, toolCalls: 0 });
 
 	await s.append(agyTurn(0, 5));
-	await s.run("stop", { fullyIdle: undefined });
+	await s.run("stop");
 	assert.deepEqual(s.workers, [[SESSION, "agy"]]);
 });
 

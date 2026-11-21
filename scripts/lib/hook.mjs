@@ -252,8 +252,8 @@ async function agyStop(dir, sessionId, input, env, spawnWorker, isAttended) {
 	// The IDE and the app share agy's plugins and hooks, and their conversations are not ours to review.
 	const { transcriptPath, lastUserInput } = input;
 	if (!isCliTranscript(transcriptPath, homeOf(env))) return;
-	// A subagent's stop has no user input, and a stop while a subagent runs is followed by a later one that has it all.
-	if (typeof lastUserInput !== "string" || lastUserInput === "" || input.fullyIdle === false) return;
+	// A subagent's stop has no user input. fullyIdle is not read: it is false while any background task runs, such as a dev server, and no later stop need follow.
+	if (typeof lastUserInput !== "string" || lastUserInput === "") return;
 	const skip = (reason, toolCalls) => appendLog(dir, { event: "skip", session: sessionId, reason, ...(toolCalls === undefined ? {} : { toolCalls }) });
 	// A script run (agy -p), agy acp and the IDE's host have no one at the keyboard to learn for; where that cannot be told, the session is left out too.
 	if ((await isAttended()) !== true) return skip("unattended session");
