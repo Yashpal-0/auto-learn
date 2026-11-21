@@ -72,6 +72,8 @@ test("Antigravity CLI gets its own wording: its skill library, its name, and man
 	assert.doesNotMatch(nudge, /Claude|Codex|Copilot|tool_search|select:|\{\{/);
 	// The review cannot open a skill's file, so the request lists the skills saved earlier.
 	assert.ok(nudge.includes("\n\n- saved-one: Use when saved\n\n"), nudge);
+	// A refused create means a skill of that name exists; retrying under another name would duplicate it.
+	assert.match(nudge, /refused because the name is taken[^.]*stop[^.]*not try another name/i);
 	assert.throws(() => captureNudge("manage_skill", "agy"), /needs a value for \{\{skills\}\}/);
 });
 
