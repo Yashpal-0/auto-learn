@@ -69,7 +69,11 @@ export function manageSkillDescription(skillsDir, host = "claude") {
 	return fill(template("manage-skill", host), { skillsDir: displayPath(skillsDir) }).trim();
 }
 
-/** The prompt a capture fork gets after the turn it reviews. */
-export function captureNudge(toolName, host = "claude") {
-	return fill(template("capture", host), { tool: toolName }).trim();
+/**
+ * The prompt a capture fork gets after the turn it reviews. `values` fill the
+ * request's other placeholders, which only the hosts whose review cannot
+ * see the session have: Antigravity CLI's {{skills}}.
+ */
+export function captureNudge(toolName, host = "claude", values = {}) {
+	return fill(template("capture", host), { ...values, tool: toolName }).trim();
 }
