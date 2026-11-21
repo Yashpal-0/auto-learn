@@ -37,6 +37,11 @@ export function guidanceText(skillsDir, host = "claude") {
  */
 export function learnedSkillsText(skills, host = "claude") {
 	if (skills.length === 0) return "";
+	return fill(template("learned-skills", host), { skills: learnedSkillLines(skills) }).trim();
+}
+
+/** The lines of the learned-skill listing, one skill each, or "" without skills; see learnedSkillsText. */
+export function learnedSkillLines(skills) {
 	const lines = [];
 	let size = 0;
 	for (const { name, description } of skills) {
@@ -47,7 +52,7 @@ export function learnedSkillsText(skills, host = "claude") {
 	}
 	const omitted = skills.length - lines.length;
 	if (omitted > 0) lines.push(`- ${omitted} older learned ${omitted === 1 ? "skill is" : "skills are"} not listed here.`);
-	return fill(template("learned-skills", host), { skills: lines.join("\n") }).trim();
+	return lines.join("\n");
 }
 
 /** The description whole when it is short, else its first sentence, else cut at a word. */

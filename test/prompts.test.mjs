@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { captureNudge, fill, guidanceText, learnedSkillsText, manageSkillDescription } from "../scripts/lib/prompts.mjs";
+import { captureNudge, fill, guidanceText, learnedSkillLines, learnedSkillsText, manageSkillDescription } from "../scripts/lib/prompts.mjs";
 
 test("fill substitutes each placeholder once and refuses a missing value", () => {
 	assert.equal(fill("{{a}} and {{b}}", { a: "{{b}}", b: "x" }), "{{b}} and x");
@@ -116,6 +116,11 @@ test("the learned-skill listing gives each skill a short description", () => {
 	assert.ok(lines[2].length <= "- long-skill: ".length + 160, lines[2]);
 	assert.equal(lines[3], "- bare-skill");
 	assert.equal(lines.length, 4);
+});
+
+test("learnedSkillLines lists the skills as the session guidance does, and is empty without any", () => {
+	assert.equal(learnedSkillLines([]), "");
+	assert.equal(learnedSkillLines([{ name: "a", description: "Use when a" }, { name: "b", description: "" }]), "- a: Use when a\n- b");
 });
 
 test("the learned-skill listing stops at its size limit and says how many older skills it left out", () => {
