@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -7,9 +8,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { captureAgyTurn, runAgyReview } from "../scripts/lib/agy.mjs";
 import { captureNudge } from "../scripts/lib/prompts.mjs";
 import { MARKER_FILE } from "../scripts/lib/skills.mjs";
-import { AGY_CONVERSATION, agy, agyTurn, tempDir, toJsonl } from "./helpers.mjs";
+import { hasJob, queueCapture } from "../scripts/lib/state.mjs";
+import { AGY_CONVERSATION, agy, agyTurn, runUnderAgy, tempDir, toJsonl } from "./helpers.mjs";
 
 const FAKE_AGY = new URL("./fake-agy.mjs", import.meta.url).pathname;
+const WORKER_SCRIPT = new URL("../scripts/capture.mjs", import.meta.url).pathname;
+const HOOK_SCRIPT = new URL("../scripts/hook.mjs", import.meta.url).pathname;
 const PROMPT = "Set up the dev database";
 const OTHER_CONVERSATION = "7c1f0a52-91d4-4e0b-8a3c-5d6e7f8091a2";
 const OLD_CONVERSATION = "11111111-2222-4333-8444-555555555555";
@@ -82,6 +86,27 @@ async function assertGone(pid) {
 	assert.equal(isRunning(pid), false, "what the review started outlived it");
 }
 
+/** The log record of the first capture a worker finished, once it has, and once the worker has let go of the session's lock. */
+async function captured(env, sessionId) {
+	const log = path.join(env.PLUGIN_DATA, "auto-learn.log");
+	const deadline = Date.now() + 15_000;
+	for (;;) {
+		let found;
+		try {
+			found = (await fs.readFile(log, "utf8"))
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line))
+				.find((record) => record.event === "capture");
+		} catch (error) {
+			if (error.code !== "ENOENT") throw error;
+		}
+		if (found && (await listing(path.join(env.PLUGIN_DATA, "locks"))).length === 0) return found;
+		assert.ok(Date.now() < deadline, `the worker for ${sessionId} never logged a capture`);
+		await sleep(50);
+	}
+}
+
 /**
  * A temporary world: a fake agy on PATH, a HOME with the conversation whose
  * transcript holds `turn`, the project, the plugin's data folder and a skills
@@ -98,6 +123,7 @@ async function world(t, mode, { turn = agyTurn(0, 5, PROMPT), env: extraEnv = {}
 		...process.env,
 		...HOOK_ENV,
 		HOME: home,
+		CLAUDE_CONFIG_DIR: path.join(root, "claude-config"),
 		PATH: `${bin}${path.delimiter}${process.env.PATH}`,
 		PLUGIN_DATA: path.join(root, "data"),
 		AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"),
@@ -459,4 +485,45 @@ test("the record of a review holds none of the excerpt, the request, or where th
 		const text = JSON.stringify(await capture(w));
 		for (const secret of [PROMPT, "step 3", "[auto-learn review]", "BEGIN EXCERPT", "Automatic skill review", w.root, w.home]) assert.ok(!text.includes(secret), `${mode}: the record has ${JSON.stringify(secret)}`);
 	}
+});
+
+test("the worker started with --host=agy reviews an agy job from agy's data directory, and has no session end to wait for", { timeout: 30000 }, async (t) => {
+	// The fake takes 2 seconds, so a session watcher, which looks once a second and finds no saved state for the session, would abort the review.
+	const w = await world(t, "ok", { env: { FAKE_AGY_DELAY: "2000" } });
+	await queueCapture(w.env.PLUGIN_DATA, w.job);
+	await new Promise((resolve, reject) => execFile(process.execPath, [WORKER_SCRIPT, w.job.sessionId, "--host=agy"], { env: w.env, cwd: w.root, timeout: 30_000 }, (error) => (error ? reject(error) : resolve())));
+	const record = await captured(w.env, w.job.sessionId);
+	assert.equal(record.session, w.job.sessionId);
+	assert.equal(record.outcome, "ok");
+	assert.deepEqual(record.created, ["fake-skill"]);
+	assert.equal(await hasJob(w.env.PLUGIN_DATA, w.job.sessionId), false);
+	assert.deepEqual(await w.stored(), EMPTY_STORE);
+});
+
+test("a worker that gets SIGTERM while its review runs aborts the review, logs it as aborted and exits", { timeout: 30000 }, async (t) => {
+	const w = await world(t, "hang");
+	await queueCapture(w.env.PLUGIN_DATA, w.job);
+	const worker = spawn(process.execPath, [WORKER_SCRIPT, w.job.sessionId, "--host=agy"], { env: w.env, cwd: w.root, stdio: "ignore" });
+	t.after(() => worker.kill("SIGKILL"));
+	const exited = new Promise((resolve) => worker.once("exit", resolve));
+	await w.until((entry) => entry.args);
+	worker.kill("SIGTERM");
+	await exited;
+	const record = await captured(w.env, w.job.sessionId);
+	assert.equal(record.outcome, "aborted");
+	assert.equal(record.reason, "the worker received SIGTERM");
+	assert.deepEqual(await w.stored(), EMPTY_STORE);
+});
+
+test("the Stop hook of an agy at a terminal queues the turn and starts a worker that reviews it", { timeout: 30000, skip: !existsSync("/proc/self/stat") && "no /proc" }, async (t) => {
+	const w = await world(t, "ok");
+	const input = { conversationId: AGY_CONVERSATION, transcriptPath: w.job.transcriptPath, cwd: w.job.projectDir, workspacePaths: [w.job.projectDir], lastUserInput: PROMPT, fullyIdle: true };
+	// The hook runs as agy runs it, with agy as an ancestor that the hook finds out is no script run.
+	assert.deepEqual(await runUnderAgy([], [HOOK_SCRIPT, "stop", "--host=agy"], input, w.env), { code: 0, stdout: "{}\n", stderr: "" });
+	const record = await captured(w.env, AGY_CONVERSATION);
+	assert.equal(record.session, AGY_CONVERSATION);
+	assert.equal(record.outcome, "ok");
+	assert.deepEqual(record.created, ["fake-skill"]);
+	assert.equal(await hasJob(w.env.PLUGIN_DATA, AGY_CONVERSATION), false);
+	assert.deepEqual(await w.stored(), EMPTY_STORE);
 });

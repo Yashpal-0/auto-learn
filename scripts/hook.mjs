@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Claude Code, Codex and GitHub Copilot run this for each plugin hook:
-// `hook.mjs <session-start|stop|session-end> [--host=codex|--host=copilot]`,
-// with the hook input as JSON on stdin.
+// Claude Code, Codex, GitHub Copilot and Antigravity CLI run this for each
+// plugin hook: `hook.mjs <session-start|stop|session-end> [--host=codex|
+// --host=copilot|--host=agy]`, with the hook input as JSON on stdin.
 import { parseHost } from "./lib/config.mjs";
 import { runHook } from "./lib/hook.mjs";
 
@@ -25,7 +25,9 @@ async function readInput() {
 try {
 	const host = parseHost(process.argv.slice(3));
 	const output = await runHook(process.argv[2], await readInput(), { host });
+	// agy reads a hook's output as one JSON object, and {} says there is nothing to add.
 	if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+	else if (host === "agy") process.stdout.write("{}\n");
 } catch (error) {
 	process.stderr.write(`auto-learn: ${error.message}\n`);
 	process.exitCode = 1;

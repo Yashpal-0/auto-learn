@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // The capture worker the Stop hook starts: captures the session's queued turns, logs each outcome, then exits.
+import { captureAgyTurn } from "./lib/agy.mjs";
 import { captureTurn, drainQueue } from "./lib/capture.mjs";
 import { captureCodexTurn } from "./lib/codex.mjs";
 import { captureCopilotTurn } from "./lib/copilot.mjs";
-import { dataDir } from "./lib/config.mjs";
+import { dataDir, parseHost } from "./lib/config.mjs";
 import { appendLog, hasSessionState } from "./lib/state.mjs";
 
 const SESSION_CHECK_MS = 1000;
@@ -11,17 +12,22 @@ const SESSION_CHECK_MS = 1000;
 const reviewedTurns = new Set();
 
 const sessionId = process.argv[2];
-const dir = dataDir();
+// The hook that queued the job names its host, which is what tells where the queue is.
+const host = parseHost(process.argv.slice(3));
+const dir = dataDir(process.env, host);
 const controller = new AbortController();
 const stop = (reason) => controller.abort(reason);
 process.once("SIGTERM", () => stop("the worker received SIGTERM"));
-// The SessionEnd hook deletes the session's state, so a capture stops once its session ends.
-const watcher = setInterval(() => {
-	hasSessionState(dir, sessionId).then(
-		(isOpen) => isOpen || stop("the session ended"),
-		(error) => stop(`checking the session failed: ${error.message}`),
-	);
-}, SESSION_CHECK_MS);
+// The SessionEnd hook deletes the session's state, so a capture stops once its session ends; agy has no such hook.
+const watcher =
+	host === "agy"
+		? undefined
+		: setInterval(() => {
+				hasSessionState(dir, sessionId).then(
+					(isOpen) => isOpen || stop("the session ended"),
+					(error) => stop(`checking the session failed: ${error.message}`),
+				);
+			}, SESSION_CHECK_MS);
 
 try {
 	await drainQueue(
@@ -32,6 +38,7 @@ try {
 			try {
 				if (job.host === "codex") record = await captureCodexTurn(job, { signal: controller.signal, reviewedTurns });
 				else if (job.host === "copilot") record = await captureCopilotTurn(job, { signal: controller.signal });
+				else if (job.host === "agy") record = await captureAgyTurn(job, { signal: controller.signal });
 				else record = await captureTurn(job, { signal: controller.signal });
 			} catch (error) {
 				// The worker has no terminal, so the log is where a failed capture is reported; the next job still runs.

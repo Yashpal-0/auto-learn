@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -231,6 +232,27 @@ export const agyStream = {
 		result: { conversation_id: conversationId, status: "SUCCESS", response: "", duration_seconds: 5, num_turns: 1, usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, ...extra },
 	}),
 };
+
+const AGY_PARENT = new URL("./agy-parent.mjs", import.meta.url).pathname;
+
+/**
+ * Runs `node <scriptArgs>` as a hook of an agy that was started with
+ * `agyFlags`: the script's process descends from one named agy, which is what
+ * the hooks look for to tell a person's session from a script run (`["-p"]`).
+ * `input` is the hook input; the result is what the script printed and its exit status.
+ */
+export function runUnderAgy(agyFlags, scriptArgs, input, env) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [AGY_PARENT, ...agyFlags, "--", ...scriptArgs], { argv0: "agy", env });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+		child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+		child.once("error", reject);
+		child.once("close", (code) => resolve({ code, stdout, stderr }));
+		child.stdin.end(JSON.stringify(input));
+	});
+}
 
 /** One turn as agy writes it from step `first` on: the prompt, `count` tool calls each in a model step of its own followed by its result, and the closing reply. */
 export function agyTurn(first, count, prompt = "Set up the dev database") {

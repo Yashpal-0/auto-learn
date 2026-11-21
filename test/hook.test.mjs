@@ -3,7 +3,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { runHook } from "../scripts/lib/hook.mjs";
+import { parseHost } from "../scripts/lib/config.mjs";
+import { runHook, workerArguments } from "../scripts/lib/hook.mjs";
 import { manageSkill } from "../scripts/lib/skills.mjs";
 import { queueCapture, readSessionState, takeJob } from "../scripts/lib/state.mjs";
 import { entry, tempDir, toJsonl, turnWithToolCalls } from "./helpers.mjs";
@@ -41,6 +42,16 @@ async function session(t, extraEnv = {}) {
 
 /** The skip reason and tool call count of each logged record. */
 const skips = async (s) => (await s.log()).map(({ event, reason, toolCalls }) => [event, reason, toolCalls]);
+
+test("a capture worker is started with the arguments that give back its host, none for Claude Code", () => {
+	for (const host of ["claude", "codex", "copilot", "agy"]) {
+		const [script, sessionId, ...flags] = workerArguments("s1", host);
+		assert.equal(path.basename(script), "capture.mjs");
+		assert.equal(sessionId, "s1");
+		// capture.mjs reads its host from what follows the session id, as parseHost does.
+		assert.equal(parseHost(flags), host);
+	}
+});
 
 test("session start adds the skill guidance and marks where the next turn begins", async (t) => {
 	const s = await session(t);
@@ -270,6 +281,10 @@ test("the hook script reads its input from stdin and prints the hook output", as
 	const started = await run("session-start", JSON.stringify({ session_id: "s1", transcript_path: s.transcriptPath, source: "startup" }));
 	assert.equal(started.code, 0, started.stderr);
 	assert.equal(JSON.parse(started.stdout).hookSpecificOutput.hookEventName, "SessionStart");
+
+	// Only agy reads {} as "nothing to add": for the other hosts a hook with nothing to add prints nothing.
+	const ended = await run("session-end", JSON.stringify({ session_id: "s1" }));
+	assert.deepEqual(ended, { code: 0, stdout: "", stderr: "" });
 
 	const broken = await run("stop", "{not json");
 	assert.equal(broken.code, 1);

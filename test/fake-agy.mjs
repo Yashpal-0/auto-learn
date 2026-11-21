@@ -4,7 +4,8 @@
 // directory, whole environment and the prompt it read from stdin, creates the
 // files agy keeps for a conversation in the store `--app_data_dir` names under
 // $HOME/.gemini, then reviews as $FAKE_AGY_MODE says:
-//   ok        a junk line, then one manage_skill call that saves a skill, and a successful result
+//   ok        a junk line, then one manage_skill call that saves a skill, and a successful result, all
+//             after $FAKE_AGY_DELAY milliseconds (default none)
 //   refused   a manage_skill call that agy denied: the call is DONE without output, the result lists
 //             $FAKE_AGY_DENIED denials (default 1)
 //   failed    the result in $FAKE_AGY_RESULT (JSON, default {"status":"ERROR"}) and exit status 3
@@ -66,7 +67,8 @@ function keepConversation(prompt) {
 	writeFileSync(path.join(store, "presence", `${conversationId}.lock`), "");
 }
 
-function review() {
+async function review() {
+	await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_AGY_DELAY ?? 0)));
 	const usage = (input, cacheRead) => ({ input, output: 5, cacheRead });
 	const save = { action: "create", name: "fake-skill", description: "Use when testing the fake", body: "1. Do it." };
 	process.stdout.write("WARN: not an event\n");

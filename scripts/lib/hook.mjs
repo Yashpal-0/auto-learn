@@ -1,42 +1,51 @@
-// What the plugin does at each Claude Code, Codex or GitHub Copilot hook
-// event: add the skill guidance and the learned skills at session start, queue
-// a capture after each eligible turn, and forget the session when it ends.
+// What the plugin does at each Claude Code, Codex, GitHub Copilot or
+// Antigravity CLI hook event: add the skill guidance and the learned skills at
+// session start, queue a capture after each eligible turn, and forget the
+// session when it ends.
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isAttendedSession as isAgyAttended, isCliTranscript } from "./agy-session.mjs";
+import { scanTurn } from "./agy-transcript.mjs";
 import { claudeUserSettingsFile, copilotHome, dataDir, loadOptions, skillsDir } from "./config.mjs";
 import { isAttendedSession, readCopilotTurn } from "./copilot.mjs";
 import { guidanceText, learnedSkillsText } from "./prompts.mjs";
 import { readRolloutTurn, readSessionMeta } from "./rollout.mjs";
 import { learnedSkills } from "./skills.mjs";
-import { appendLog, forgetSession, isValidSessionId, queueCapture, readSessionState, writeSessionState } from "./state.mjs";
+import { appendLog, forgetSession, isValidSessionId, pruneSessions, queueCapture, readSessionState, writeSessionState } from "./state.mjs";
 import { countToolCalls, readTranscriptRange } from "./transcript.mjs";
 
 const WORKER_SCRIPT = fileURLToPath(new URL("../capture.mjs", import.meta.url));
 /** The Codex session sources with someone at the keyboard: the terminal UI and app-server clients such as the IDE extension. */
 const ATTENDED_SOURCES = new Set(["cli", "vscode"]);
+/** agy has no session-end hook, so a session that nobody used for this long is forgotten when another starts. */
+const STALE_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Handles one hook event and returns the JSON to print, if any.
  *
  * @param {string} event "session-start", "stop" or "session-end".
  * @param {object} input The hook input the agent sends on stdin.
- * @param {{env?: object, spawnWorker?: Function, host?: "claude" | "codex" | "copilot"}} [options]
+ * @param {{env?: object, spawnWorker?: Function, host?: "claude" | "codex" | "copilot" | "agy", isAttended?: () => Promise<boolean | undefined>}} [options]
+ *   `spawnWorker(sessionId, env, host)` starts the capture worker; `isAttended` says whether a person is at the
+ *   terminal of the agy that runs the hook.
  */
-export async function runHook(event, input, { env = process.env, spawnWorker = spawnCaptureWorker, host = "claude" } = {}) {
+export async function runHook(event, input, { env = process.env, spawnWorker = spawnCaptureWorker, host = "claude", isAttended = isAgyAttended } = {}) {
 	// A capture runs in a fork of the session, which must not be captured in turn.
 	if (env.AUTO_LEARN_CAPTURE) return undefined;
-	// Copilot's own hook events name their fields in camelCase.
-	const idField = host === "copilot" ? "sessionId" : "session_id";
+	// Copilot's and agy's own hook events name their fields in camelCase.
+	const idField = { copilot: "sessionId", agy: "conversationId" }[host] ?? "session_id";
 	const sessionId = input?.[idField];
 	if (!isValidSessionId(sessionId)) throw new Error(`The hook input has no usable ${idField}: ${JSON.stringify(sessionId)}.`);
-	const dir = dataDir(env);
+	const dir = dataDir(env, host);
+	const startWorker = (id, workerEnv) => spawnWorker(id, workerEnv, host);
 	switch (event) {
 		case "session-start":
-			return sessionStart(dir, sessionId, input, env, host);
+			return host === "agy" ? agySessionStart(dir, sessionId, input, env) : sessionStart(dir, sessionId, input, env, host);
 		case "stop":
-			await ({ codex: codexStop, copilot: copilotStop }[host] ?? stop)(dir, sessionId, input, env, spawnWorker);
+			await ({ codex: codexStop, copilot: copilotStop, agy: agyStop }[host] ?? stop)(dir, sessionId, input, env, startWorker, isAttended);
 			return undefined;
 		case "session-end":
 			await forgetSession(dir, sessionId);
@@ -58,6 +67,20 @@ async function sessionStart(dir, sessionId, input, env, host) {
 	const additionalContext = await sessionContext(env, host);
 	// Copilot adds a sessionStart hook's top-level additionalContext to the session, and ignores hookSpecificOutput.
 	return host === "copilot" ? { additionalContext } : { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
+}
+
+/**
+ * The Antigravity CLI SessionStart hook, which adds the guidance and the
+ * learned skills as a system message. The state it saves has the first Stop
+ * scan the transcript from its start: agy runs this on the first message, which
+ * the transcript may already hold. It is also the one moment to forget stale
+ * session states, since agy never says a session ended.
+ */
+async function agySessionStart(dir, sessionId, input, env) {
+	if (!isCliTranscript(input.transcriptPath, homeOf(env))) return undefined;
+	await writeSessionState(dir, sessionId, { offset: 0, toolCalls: 0 });
+	await pruneSessions(dir, STALE_SESSION_MS);
+	return { injectSteps: [{ systemMessage: { systemMessage: await sessionContext(env, "agy") } }] };
 }
 
 /**
@@ -216,6 +239,52 @@ async function copilotStop(dir, sessionId, input, env, spawnWorker) {
 	await spawnWorker(sessionId, env);
 }
 
+/**
+ * The Antigravity CLI Stop hook: finds the turn that just ended in the
+ * conversation's transcript and queues it for review when someone at a
+ * terminal made enough tool calls in it. agy runs Stop several times in a
+ * turn, so a turn is queued once, at the first Stop that qualifies; the turn
+ * is then recorded as queued in the session's state.
+ */
+async function agyStop(dir, sessionId, input, env, spawnWorker, isAttended) {
+	const options = loadOptions(env);
+	if (!options.autoCapture) return;
+	// The IDE and the app share agy's plugins and hooks, and their conversations are not ours to review.
+	const { transcriptPath, lastUserInput } = input;
+	if (!isCliTranscript(transcriptPath, homeOf(env))) return;
+	// A subagent's stop has no user input, and a stop while a subagent runs is followed by a later one that has it all.
+	if (typeof lastUserInput !== "string" || lastUserInput === "" || input.fullyIdle === false) return;
+	const skip = (reason, toolCalls) => appendLog(dir, { event: "skip", session: sessionId, reason, ...(toolCalls === undefined ? {} : { toolCalls }) });
+	// A script run (agy -p), agy acp and the IDE's host have no one at the keyboard to learn for; where that cannot be told, the session is left out too.
+	if ((await isAttended()) !== true) return skip("unattended session");
+
+	const saved = await readSessionState(dir, sessionId);
+	const turn = await scanTurn(transcriptPath, saved?.offset);
+	if (turn === undefined) return skip("the transcript has no turn");
+	const { offset, promptId, toolCalls, end } = turn;
+	if (saved?.queued === true && saved.promptId === promptId) return skip("already queued", toolCalls);
+	const reason = /^\/plan(\s|$)/.test(lastUserInput) ? "plan mode" : toolCalls < options.minToolCalls ? `fewer than ${options.minToolCalls} tool calls` : undefined;
+	const queued = reason === undefined;
+	if (queued) await queueCapture(dir, { host: "agy", sessionId, transcriptPath, start: offset, end, toolCalls, projectDir: agyProjectDir(input) });
+	await writeSessionState(dir, sessionId, { offset, promptId, toolCalls, ...(queued ? { queued } : {}) });
+	if (!queued) return skip(reason, toolCalls);
+	await appendLog(dir, { event: "queued", session: sessionId, toolCalls, ...(typeof input.terminationReason === "string" ? { terminationReason: input.terminationReason } : {}) });
+	await spawnWorker(sessionId, env);
+}
+
+/** The folder the session works in: the first of its workspace folders, else the hook's working directory. */
+function agyProjectDir({ workspacePaths, cwd }) {
+	const first = Array.isArray(workspacePaths) ? workspacePaths[0] : undefined;
+	const projectDir = typeof first === "string" && first !== "" ? first : cwd;
+	if (typeof projectDir !== "string" || projectDir === "") throw new Error("The hook input has no usable workspacePaths or cwd.");
+	return projectDir;
+}
+
+/** The home folder agy keeps its conversations under. */
+function homeOf(env) {
+	return env.HOME || os.homedir();
+}
+
 function transcriptPathOf(input) {
 	const value = input.transcript_path;
 	if (typeof value !== "string" || !value) throw new Error("The hook input has no transcript_path.");
@@ -231,11 +300,21 @@ async function transcriptSize(file) {
 	}
 }
 
+/**
+ * What the capture worker is started with: its script, the session and the host
+ * as `parseHost` reads it. The worker needs its host to find where the hook kept
+ * the queue, since agy's data directory is its own; Claude Code's worker is
+ * given no argument, because `parseHost` rejects `--host=claude`.
+ */
+export function workerArguments(sessionId, host) {
+	return [WORKER_SCRIPT, sessionId, ...(host === "claude" ? [] : [`--host=${host}`])];
+}
+
 /** Starts the capture worker in its own process group, so the hook returns at once and the worker outlives it. */
-function spawnCaptureWorker(sessionId, env) {
+function spawnCaptureWorker(sessionId, env, host = "claude") {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [WORKER_SCRIPT, sessionId], {
-			cwd: dataDir(env),
+		const child = spawn(process.execPath, workerArguments(sessionId, host), {
+			cwd: dataDir(env, host),
 			env,
 			detached: true,
 			stdio: "ignore",
