@@ -33,6 +33,9 @@ function parseCount(raw) {
 	return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+/** The agents named by `--host=<name>`; Claude Code is the one that gets no argument. */
+const FLAG_HOSTS = ["codex", "copilot"];
+
 /**
  * The agent a hook or the MCP server runs for, from its command-line
  * arguments: none for Claude Code, `--host=codex` for Codex, `--host=copilot`
@@ -42,8 +45,10 @@ function parseCount(raw) {
  */
 export function parseHost(args) {
 	if (args.length === 0) return "claude";
-	if (args.length === 1 && (args[0] === "--host=codex" || args[0] === "--host=copilot")) return args[0].slice("--host=".length);
-	throw new Error(`Unknown arguments ${JSON.stringify(args)}: expected nothing, --host=codex or --host=copilot.`);
+	const host = args.length === 1 ? FLAG_HOSTS.find((name) => args[0] === `--host=${name}`) : undefined;
+	if (host) return host;
+	const expected = ["nothing", ...FLAG_HOSTS.map((name) => `--host=${name}`)];
+	throw new Error(`Unknown arguments ${JSON.stringify(args)}: expected ${expected.slice(0, -1).join(", ")} or ${expected.at(-1)}.`);
 }
 
 function claudeConfigDir(env) {
