@@ -157,9 +157,10 @@ test("for Antigravity CLI, create refuses the name a skill declares in its SKILL
 	await declared(builtin, "antigravity_guide", "name: antigravity-guide\ndescription: Mine");
 	await declared(builtin, "native_swarm", 'name: "swarm"\ndescription: Mine');
 	await declared(builtin, "no_name_here", "description: Mine");
+	await declared(builtin, "mixed_case", "name: Swarm-Mixed\ndescription: Mine");
 	await declared(projectSkills, "ship_folder", "name: ship-it\ndescription: Mine");
 	const agy = { ...context, host: "agy", builtinSkillsDirs: [builtin] };
-	for (const [name, folder] of [["antigravity-guide", "antigravity_guide"], ["swarm", "native_swarm"], ["ship-it", "ship_folder"]]) {
+	for (const [name, folder] of [["antigravity-guide", "antigravity_guide"], ["swarm", "native_swarm"], ["swarm-mixed", "mixed_case"], ["ship-it", "ship_folder"]]) {
 		await assert.rejects(create(agy, name), new RegExp(`already exists at .*${folder}.*another name`), name);
 		await assert.rejects(fs.access(path.join(context.skillsDir, name)), name);
 	}
