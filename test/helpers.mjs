@@ -166,3 +166,43 @@ export function copilotFusionTurn(fusionId, count, { mode = "interactive", promp
 	after.push(copilot.turnStart(String(count + 1), mode), copilot.reply("Done: the database is ready."), copilot.turnEnd(String(count + 1)), copilot.fusionDone(fusionId));
 	return { before, after };
 }
+
+const AGY_TIME = "2026-11-21T15:46:36Z";
+
+/** Records shaped like the lines of an Antigravity CLI conversation's transcript_full.jsonl, as agy 1.5.14 writes them. */
+export const agy = {
+	// The text typed is wrapped in the request tag, with the metadata agy adds after it.
+	prompt: (stepIndex, text) => ({
+		step_index: stepIndex,
+		source: "USER_EXPLICIT",
+		type: "USER_INPUT",
+		status: "DONE",
+		created_at: AGY_TIME,
+		content: `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-21T21:16:36+05:30.\n</ADDITIONAL_METADATA>`,
+	}),
+	reply: (stepIndex, { content, calls = [], thinking } = {}) => ({
+		step_index: stepIndex,
+		source: "MODEL",
+		type: "PLANNER_RESPONSE",
+		status: "DONE",
+		created_at: AGY_TIME,
+		model: "gemini-test",
+		...(thinking ? { thinking } : {}),
+		...(content ? { content } : {}),
+		...(calls.length > 0 ? { tool_calls: calls } : {}),
+	}),
+	call: (name, args = {}) => ({ name, args }),
+	result: (stepIndex, content, extra = {}) => ({ step_index: stepIndex, source: "MODEL", type: "GENERIC", status: "DONE", created_at: AGY_TIME, content, ...extra }),
+	system: (stepIndex, content) => ({ step_index: stepIndex, source: "SYSTEM", type: "SYSTEM_MESSAGE", status: "DONE", created_at: AGY_TIME, content }),
+};
+
+/** One turn as agy writes it from step `first` on: the prompt, `count` tool calls each in a model step of its own followed by its result, and the closing reply. */
+export function agyTurn(first, count, prompt = "Set up the dev database") {
+	const records = [agy.prompt(first, prompt)];
+	let index = first + 1;
+	for (let i = 1; i <= count; i++) {
+		records.push(agy.reply(index++, { calls: [agy.call("run_command", { CommandLine: `step ${i}` })] }), agy.result(index++, `Command exited with code 0.\n\nCommand output:\nok ${i}`));
+	}
+	records.push(agy.reply(index, { content: "Done: the database is ready." }));
+	return records;
+}
