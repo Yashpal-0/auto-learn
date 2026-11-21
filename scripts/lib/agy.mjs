@@ -154,11 +154,12 @@ function recordOf({ outcome, reason, error, summary }) {
 export function runAgyReview({ prompt, cwd, env, signal, timeoutMs = CAPTURE_TIMEOUT_MS, killGraceMs = KILL_GRACE_MS }) {
 	return new Promise((resolve) => {
 		const child = spawn("agy", REVIEW_ARGS, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-		const analyzer = createStreamAnalyzer();
+		const analyzer = createStreamAnalyzer(REVIEW_AGENT);
 		child.stdout.on(
 			"data",
 			lineSplitter(MAX_STDOUT_LINE_BYTES, (line) => {
-				if (analyzer.accept(parseLine(line))) stopChild({ outcome: "stopped", reason: "the review called a tool other than manage_skill" });
+				const verdict = analyzer.accept(parseLine(line));
+				if (verdict) stopChild({ outcome: "stopped", reason: verdict.stop });
 			}),
 		);
 		const stderr = boundedSink(child.stderr, MAX_STDERR_BYTES);

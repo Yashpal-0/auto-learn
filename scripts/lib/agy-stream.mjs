@@ -5,6 +5,7 @@
 // allows, so this watch is the check that the agent's limits held. Keeps names
 // and counts, never text.
 import { noteToolName, requestedSave } from "./capture.mjs";
+import { parseName, savedMessageStart } from "./skills.mjs";
 import { clip } from "./transcript.mjs";
 
 const MAX_ERROR_CHARS = 500;
@@ -29,8 +30,26 @@ const isOwnServer = (name) => typeof name === "string" && (name === "auto-learn"
 const EAGER_SKILL_TOOL = /^mcp_(.+)_manage_skill$/;
 
 const isObject = (value) => value !== null && typeof value === "object";
-const asText = (value) => (typeof value === "string" ? value : "?");
+/** A tool or server name as the log may keep it: its characters only, never the free text a model could put there. */
+const asName = (value) => (typeof value === "string" ? value.replace(/[^\w.:/@-]/g, "?") : "?");
 const finite = (value) => (Number.isFinite(value) ? value : 0);
+
+/**
+ * Whether `output` holds, at the start of one of its lines (agy puts its own
+ * "Created At" lines before the tool's text), the message manageSkill returns
+ * for this save. A refusal comes back through the same field and says
+ * otherwise, and how agy reports an MCP error is not recorded.
+ */
+function confirmsSave({ action, name }, output) {
+	let start;
+	try {
+		start = savedMessageStart(action, parseName(name));
+	} catch {
+		// An invalid name was refused, whatever the output says.
+		return false;
+	}
+	return output.split("\n").some((line) => line.startsWith(start));
+}
 
 /** What the review's tool call is, from the first event of its step: its own manage_skill call, an ordinary tool of every agent, or one to stop the review for. */
 function judge(step) {
@@ -38,12 +57,12 @@ function judge(step) {
 	const parameters = step.tool_info?.parameters;
 	if (tool === "call_mcp_tool") {
 		if (isOwnServer(parameters?.ServerName) && parameters.ToolName === "manage_skill") return { own: true, save: requestedSave(parameters.Arguments), settled: false };
-		return { foreign: `call_mcp_tool:${asText(parameters?.ServerName)}/${asText(parameters?.ToolName)}` };
+		return { foreign: `call_mcp_tool:${asName(parameters?.ServerName)}/${asName(parameters?.ToolName)}` };
 	}
 	const eager = typeof tool === "string" ? EAGER_SKILL_TOOL.exec(tool) : null;
 	if (eager !== null && isOwnServer(eager[1])) return { own: true, save: requestedSave(parameters), settled: false };
 	if (TOLERATED_TOOLS.has(tool)) return { own: false, tolerated: tool };
-	return { foreign: typeof tool === "string" ? tool : "unknown tool" };
+	return { foreign: typeof tool === "string" ? asName(tool) : "unknown tool" };
 }
 
 /**
@@ -65,11 +84,14 @@ function judge(step) {
 
 /**
  * An analyzer for one review's stream. `accept` takes the parsed events in
- * order and says `{stop}` at the first call of a tool that is not the
- * review's, after which it ignores everything; `finish` summarizes the run so
- * far, also for one that was stopped or killed before its result.
+ * order and says `{stop: reason}` at the init event of a run under another
+ * agent than `agent`, or at the first call of a tool that is not the review's,
+ * after which it ignores everything; `finish` summarizes the run so far, also
+ * for one that was stopped or killed before its result.
+ *
+ * @param {string} agent the agent the review must run under
  */
-export function createStreamAnalyzer() {
+export function createStreamAnalyzer(agent) {
 	const calls = new Map();
 	const replies = new Map();
 	const otherTools = new Set();
@@ -79,6 +101,7 @@ export function createStreamAnalyzer() {
 	let deniedActions = 0;
 	let conversationId;
 	let result = {};
+	let stopped = false;
 	let stoppedTool;
 
 	function acceptTool(step) {
@@ -88,7 +111,8 @@ export function createStreamAnalyzer() {
 			call = judge(step);
 			if (call.foreign !== undefined) {
 				stoppedTool = clip(call.foreign, MAX_TOOL_NAME_CHARS);
-				return { stop: stoppedTool };
+				stopped = true;
+				return { stop: "the review called a tool other than manage_skill" };
 			}
 			if (Number.isSafeInteger(index)) calls.set(index, call);
 			if (call.own) skillCalls++;
@@ -101,7 +125,7 @@ export function createStreamAnalyzer() {
 		if (call.own && !call.settled && (step.state === "DONE" || step.state === "ERROR")) {
 			call.settled = true;
 			const info = step.tool_info;
-			if (step.state === "DONE" && call.save !== undefined && typeof info?.output === "string" && info.output !== "" && !info.error) saves.push(call.save);
+			if (step.state === "DONE" && call.save !== undefined && typeof info?.output === "string" && !info.error && confirmsSave(call.save, info.output)) saves.push(call.save);
 		}
 		return undefined;
 	}
@@ -110,7 +134,8 @@ export function createStreamAnalyzer() {
 		if (!isObject(step)) return undefined;
 		if (conversationId === undefined && typeof step.conversation_id === "string") conversationId = step.conversation_id;
 		if (step.step_type === "agent_response" && step.state === "DONE" && isObject(step.usage) && Number.isSafeInteger(step.step_index)) replies.set(step.step_index, step.usage);
-		return step.step_type === "tool" ? acceptTool(step) : undefined;
+		// Any step that carries a tool is judged, whatever type agy files it under: a tool the watch missed would be one it never stopped.
+		return step.step_type === "tool" || typeof step.tool_name === "string" || isObject(step.tool_info) ? acceptTool(step) : undefined;
 	}
 
 	function acceptResult(printed) {
@@ -125,9 +150,14 @@ export function createStreamAnalyzer() {
 
 	return {
 		accept(event) {
-			if (stoppedTool !== undefined || !isObject(event)) return undefined;
+			if (stopped || !isObject(event)) return undefined;
 			if (event.event === "init") {
 				if (typeof event.conversation_id === "string") conversationId = event.conversation_id;
+				const running = event.init?.agent;
+				if (running !== agent) {
+					stopped = true;
+					return { stop: `agy ran the review under the agent ${JSON.stringify(clip(asName(running), MAX_REASON_CHARS))}, not ${JSON.stringify(agent)}` };
+				}
 			} else if (event.event === "step_update") {
 				return acceptStep(event.step_update);
 			} else if (event.event === "result" && isObject(event.result)) {

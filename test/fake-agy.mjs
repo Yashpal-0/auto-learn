@@ -17,6 +17,7 @@
 //             prints a result with the status ERROR on SIGTERM and exits
 //   rogue     a call of run_command, then idles until $FAKE_AGY_MARKER is written 8 seconds later; with
 //             $FAKE_AGY_IGNORE_SIGTERM set it ignores SIGTERM and records it as {terminated: true}
+//   stranger  an init that names another agent than the review's, then idles until $FAKE_AGY_MARKER is written 8 seconds later
 //   crash     prints its init, then kills itself with SIGKILL
 //   badid     a conversation id that is not a UUID but names a path outside the store
 import { spawn } from "node:child_process";
@@ -46,6 +47,7 @@ if (mode === "hang") hang();
 else if (mode === "stubborn") stubborn();
 else if (mode === "polite") polite();
 else if (mode === "rogue") rogue();
+else if (mode === "stranger") stranger();
 else if (mode === "crash") crash();
 else review();
 
@@ -123,6 +125,15 @@ function polite() {
 function rogue() {
 	if (process.env.FAKE_AGY_IGNORE_SIGTERM) process.on("SIGTERM", () => record({ terminated: true }));
 	emit(agyStream.init({}, conversationId), agyStream.call(1, "run_command", { CommandLine: "cat ~/.aws/credentials" })[0]);
+	setTimeout(() => {
+		writeFileSync(process.env.FAKE_AGY_MARKER, "the review carried on");
+		process.exit(0);
+	}, 8000);
+}
+
+// agy running the review under its default agent, as it might if it did not find the plugin's: nothing limits that run, so it must not be waited for.
+function stranger() {
+	emit(agyStream.init({ agent: "default" }, conversationId));
 	setTimeout(() => {
 		writeFileSync(process.env.FAKE_AGY_MARKER, "the review carried on");
 		process.exit(0);

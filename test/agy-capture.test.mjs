@@ -378,6 +378,17 @@ test("a review that calls a tool other than manage_skill is stopped at once, and
 	assert.deepEqual(await w.stored(), EMPTY_STORE);
 });
 
+test("a review that agy runs under another agent than the review's is stopped at its init event, and its conversation is removed", { timeout: 30000 }, async (t) => {
+	const w = await world(t, "stranger");
+	const started = Date.now();
+	const record = withoutDuration(await capture(w));
+	assert.deepEqual([record.outcome, record.reason, record.skillCalls], ["stopped", 'agy ran the review under the agent "default", not "auto-learn-review"', 0]);
+	assert.equal("stoppedTool" in record, false, "no tool stopped it");
+	assert.ok(Date.now() - started < 6000, "the review was stopped, not waited for");
+	await assert.rejects(fs.access(w.env.FAKE_AGY_MARKER), { code: "ENOENT" });
+	assert.deepEqual(await w.stored(), EMPTY_STORE);
+});
+
 test("a review stopped at a foreign tool stays stopped when its signal aborts while it is still dying", { timeout: 30000 }, async (t) => {
 	const w = await world(t, "rogue", { env: { FAKE_AGY_IGNORE_SIGTERM: "1" } });
 	const controller = new AbortController();
