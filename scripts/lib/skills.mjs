@@ -415,12 +415,16 @@ async function readSkillHead(file) {
 	}
 }
 
-// shortcut: reads a one-line description, as manage_skill writes it; a multi-line YAML value gives "". Parse YAML if hand-edited skills need it.
-function frontmatterDescription(text) {
+// shortcut: reads a one-line value, as manage_skill writes it; a multi-line YAML value gives "". Parse YAML if hand-edited skills need it.
+function frontmatterField(text, key) {
 	const frontmatter = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)?.[1] ?? "";
-	const value = /^description:[ \t]*(.*)$/m.exec(frontmatter)?.[1].trim() ?? "";
+	const value = new RegExp(`^${key}:[ \\t]*(.*)$`, "m").exec(frontmatter)?.[1].trim() ?? "";
 	if (/^[|>]/.test(value)) return "";
-	return cleanDescription(value.startsWith('"') ? parseQuoted(value) : value);
+	return value.startsWith('"') ? parseQuoted(value) : value;
+}
+
+function frontmatterDescription(text) {
+	return cleanDescription(frontmatterField(text, "description"));
 }
 
 function parseQuoted(value) {
