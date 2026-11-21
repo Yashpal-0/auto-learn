@@ -109,13 +109,13 @@ function isWellFormed(job) {
 
 /**
  * The review's prompt: a first line that names it, the excerpt between two
- * marker lines with a nonce nothing in the excerpt could have known, so text
- * in it cannot end the block, then the request, which refers to the excerpt as
- * "above" and lists the skills saved so far.
+ * marker lines with a nonce nothing in the excerpt could have known, then the
+ * request, which names the nonce, so that a forged marker in the excerpt is
+ * recognisable, refers to the excerpt as "above" and lists the skills saved so far.
  */
 function reviewPrompt(excerpt, skills) {
 	const nonce = randomBytes(8).toString("hex");
-	const request = captureNudge("manage_skill", "agy", { skills: learnedSkillLines(skills) || "none yet" });
+	const request = captureNudge("manage_skill", "agy", { skills: learnedSkillLines(skills) || "none yet", nonce });
 	return ["[auto-learn review]", "", `BEGIN EXCERPT ${nonce}`, excerpt, `END EXCERPT ${nonce}`, "", request].join("\n");
 }
 

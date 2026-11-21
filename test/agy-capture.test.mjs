@@ -218,9 +218,9 @@ test("the prompt is one stream-json message: the excerpt between nonce markers, 
 	assert.ok(one.excerpt.startsWith(`[user]\n${PROMPT}\n\n[tool call] run_command\n{"CommandLine":"step 1"}`), one.excerpt);
 	assert.ok(one.excerpt.includes('[tool call] run_command\n{"CommandLine":"step 5"}\n\n[tool result]\nCommand exited with code 0.\n\nCommand output:\nok 5'), one.excerpt);
 	assert.ok(one.excerpt.endsWith("[assistant]\nDone: the database is ready."), one.excerpt);
-	assert.equal(one.request, captureNudge("manage_skill", "agy", { skills: "none yet" }));
+	assert.equal(one.request, captureNudge("manage_skill", "agy", { skills: "none yet", nonce: one.nonce }));
 	const two = parse(second);
-	assert.equal(two.request, captureNudge("manage_skill", "agy", { skills: "- earlier-skill: Use when the earlier thing happens." }));
+	assert.equal(two.request, captureNudge("manage_skill", "agy", { skills: "- earlier-skill: Use when the earlier thing happens.", nonce: two.nonce }));
 	assert.notEqual(one.nonce, two.nonce, "every review gets a nonce of its own");
 });
 
