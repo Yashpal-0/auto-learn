@@ -107,7 +107,7 @@ export function createStreamAnalyzer() {
 		if (conversationId === undefined && typeof printed.conversation_id === "string") conversationId = printed.conversation_id;
 		deniedActions = Array.isArray(printed.denied_actions) ? printed.denied_actions.length : 0;
 		result = {
-			status: typeof printed.status === "string" ? printed.status : undefined,
+			status: typeof printed.status === "string" ? clip(printed.status, MAX_REASON_CHARS) : undefined,
 			finishedReason: typeof printed.finished_reason === "string" ? clip(printed.finished_reason, MAX_REASON_CHARS) : undefined,
 			error: typeof printed.error === "string" ? clip(printed.error, MAX_ERROR_CHARS) : undefined,
 		};

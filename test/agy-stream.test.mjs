@@ -178,8 +178,8 @@ test("fields of the wrong type are left out of the summary, and tokens that are 
 	const { summary } = analyze([reply, stream.result({ status: 5, finished_reason: {}, error: 7 })]);
 	assert.deepEqual([summary.inputTokens, summary.cacheReadTokens, summary.outputTokens], [0, 0, 0]);
 	for (const key of ["status", "finishedReason", "error"]) assert.equal(key in summary, false, key);
-	const long = analyze([stream.result({ finished_reason: "x".repeat(500) })]).summary.finishedReason;
-	assert.ok(long.length < 200, "a reason is clipped");
+	const long = analyze([stream.result({ status: "x".repeat(500), finished_reason: "x".repeat(500) })]).summary;
+	for (const key of ["status", "finishedReason"]) assert.ok(long[key].length < 200, `${key} is clipped`);
 });
 
 test("the model's own text, the user's prompt and system messages are no tool calls", () => {
