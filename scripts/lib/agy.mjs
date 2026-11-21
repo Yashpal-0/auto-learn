@@ -11,7 +11,7 @@ import path from "node:path";
 import { REVIEW_STORE_NAME, removeConversation, reviewStoreDir, sweepStore } from "./agy-store.mjs";
 import { createStreamAnalyzer } from "./agy-stream.mjs";
 import { renderTurn } from "./agy-transcript.mjs";
-import { boundedSink, forkEnvironment, isDirectory, isFile, skillChanges } from "./capture.mjs";
+import { boundedSink, forkEnvironment, isDirectory, isFile, skillChanges, withoutLinkSecrets } from "./capture.mjs";
 import { dataDir, skillsDir } from "./config.mjs";
 import { lineSplitter, parseLine } from "./jsonl.mjs";
 import { captureNudge, learnedSkillLines } from "./prompts.mjs";
@@ -211,8 +211,8 @@ function endOf(summary, stopped, exit, stderr) {
 	}
 	if (stopped) return stopped;
 	if (status !== undefined) return { outcome: "error", error: summary.error ?? `agy ended with the status ${status}` };
-	// stderr only: stdout holds the review's own text, which the log must not.
-	const detail = stderr().trim().slice(-MAX_ERROR_CHARS) || "no error output";
+	// stderr only: stdout holds the review's own text, which the log must not. Links are cut down before the end is taken, so a token that straddles the cut is not left half shown.
+	const detail = withoutLinkSecrets(stderr()).trim().slice(-MAX_ERROR_CHARS) || "no error output";
 	return { outcome: "error", error: `agy ended without a result (exit ${exit}): ${detail}` };
 }
 

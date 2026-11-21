@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { captureTurn, drainQueue, GATE_SETTINGS, MANAGE_SKILL_TOOL, requestedSave, runFork, skillChanges } from "../scripts/lib/capture.mjs";
+import { captureTurn, drainQueue, GATE_SETTINGS, MANAGE_SKILL_TOOL, requestedSave, runFork, skillChanges, withoutLinkSecrets } from "../scripts/lib/capture.mjs";
 import { captureNudge } from "../scripts/lib/prompts.mjs";
 import { acquireLock, forgetSession, queueCapture, takeJob, writeSessionState } from "../scripts/lib/state.mjs";
 import { manageSkill } from "../scripts/lib/skills.mjs";
@@ -93,6 +93,20 @@ async function waitForFile(file, timeoutMs = 10_000) {
 		await sleep(20);
 	}
 }
+
+test("withoutLinkSecrets cuts each http(s) link to its scheme, host and path and leaves other text as it was", () => {
+	const cases = [
+		["see https://a.example/p?plt=T&next=https://b.example/ok#frag now", "see https://a.example/p now"],
+		["https://user:pw@a.example:8443/p", "https://a.example:8443/p"],
+		["HTTP://A.EXAMPLE/P?X=1#Y", "HTTP://A.EXAMPLE/P"],
+		["(see https://a.example/p?x=1) and 'https://b.example/q#f'", "(see https://a.example/p) and 'https://b.example/q'"],
+		['{"url":"https://a.example/p?x=1"}', '{"url":"https://a.example/p"}'],
+		["https://a.example/img@2x.png and mail me@a.example", "https://a.example/img@2x.png and mail me@a.example"],
+		["no link, a ?query and a #tag", "no link, a ?query and a #tag"],
+		["", ""],
+	];
+	for (const [text, expected] of cases) assert.equal(withoutLinkSecrets(text), expected, text);
+});
 
 test("runFork forks the session at the turn's end as a new session with every tool but manage_skill refused", async (t) => {
 	const w = await world(t, "ok");

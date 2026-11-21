@@ -314,6 +314,25 @@ test("an agy that exits without a result is an error with the end of its stderr,
 	assert.equal(silent.error, "agy ended without a result (exit 3): no error output");
 });
 
+test("the error a review logs keeps no token from a link that agy printed, on stderr or in its result", async (t) => {
+	const link = "https://accounts.example/v3/signin/continue?plt=SECRETTOKEN&continue=https://example.com/ok#frag";
+	const bare = "https://accounts.example/v3/signin/continue";
+	const stderrOf = async (text) => withoutDuration(await capture(await world(t, "exit", { env: { FAKE_AGY_STDERR: text } })));
+	assert.equal((await stderrOf(`Verify your account to continue:\n${link}\n`)).error, `agy ended without a result (exit 3): Verify your account to continue:\n${bare}`);
+	// A link longer than the 500 characters the log keeps loses its query before those are taken, so no piece of its token is left.
+	const long = (await stderrOf(`${"progress ".repeat(80)}\n${link.replace("SECRETTOKEN", "S".repeat(2000))}\n`)).error;
+	assert.ok(long.endsWith(`\n${bare}`), long);
+	assert.ok(!long.includes("SSSS"), long);
+	const printed = { status: "ERROR", error: `Eligibility check failed. Verify your account: ${link}` };
+	const streamed = withoutDuration(await capture(await world(t, "failed", { env: { FAKE_AGY_RESULT: JSON.stringify(printed) } })));
+	assert.equal(streamed.error, `Eligibility check failed. Verify your account: ${bare}`);
+	// The same holds where the result's error is cut to its start: a password that the cut would split from its host is not left half shown.
+	const split = { status: "ERROR", error: `${"x".repeat(480)} https://user:${"p".repeat(100)}@accounts.example/v3/signin` };
+	const cut = withoutDuration(await capture(await world(t, "failed", { env: { FAKE_AGY_RESULT: JSON.stringify(split) } }))).error;
+	assert.ok(cut.startsWith("xxxx"), cut);
+	assert.ok(!cut.includes("ppp"), cut);
+});
+
 test("an agy that a signal kills is an error that names the signal, and its conversation is removed", async (t) => {
 	const w = await world(t, "crash");
 	const record = withoutDuration(await capture(w));

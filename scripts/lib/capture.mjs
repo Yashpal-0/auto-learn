@@ -305,6 +305,15 @@ export function boundedSink(stream, limit) {
 }
 
 /**
+ * `text` with each http(s) link cut down to its scheme, host and path. A link
+ * carries a password before its host and a sign-in token after its path, and
+ * the log that this text goes to is what people paste into bug reports.
+ */
+export function withoutLinkSecrets(text) {
+	return text.replace(/\b(https?:\/\/)(?:[^\s/?#@]*@)?([^\s?#"'<>)]*)(?:[?#][^\s"'<>)]*)?/gi, "$1$2");
+}
+
+/**
  * Takes in one message the fork printed: the usage of each reply, its advisor
  * calls, which run on the server where no hook can refuse them, the calls the
  * gate refused, and its manage_skill calls, which count as saves once their

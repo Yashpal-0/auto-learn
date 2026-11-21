@@ -4,7 +4,7 @@
 // business with. `init.tools` lists the whole tool registry whatever the agent
 // allows, so this watch is the check that the agent's limits held. Keeps names
 // and counts, never text.
-import { noteToolName, requestedSave } from "./capture.mjs";
+import { noteToolName, requestedSave, withoutLinkSecrets } from "./capture.mjs";
 import { parseName, savedMessageStart } from "./skills.mjs";
 import { clip } from "./transcript.mjs";
 
@@ -144,7 +144,7 @@ export function createStreamAnalyzer(agent) {
 		result = {
 			status: typeof printed.status === "string" ? clip(printed.status, MAX_REASON_CHARS) : undefined,
 			finishedReason: typeof printed.finished_reason === "string" ? clip(printed.finished_reason, MAX_REASON_CHARS) : undefined,
-			error: typeof printed.error === "string" ? clip(printed.error, MAX_ERROR_CHARS) : undefined,
+			error: typeof printed.error === "string" ? clip(withoutLinkSecrets(printed.error), MAX_ERROR_CHARS) : undefined,
 		};
 	}
 
