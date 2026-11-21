@@ -225,8 +225,10 @@ export const agyStream = {
 			tool_info: { name, parameters, ...(output === undefined ? {} : { output }), ...(error === undefined ? {} : { error: { type: "TOOL_ERROR", message: error } }) },
 		}),
 	],
-	/** A call of the plugin's manage_skill, which agy makes through call_mcp_tool. */
+	/** A call of the plugin's manage_skill, which agy makes through call_mcp_tool unless the tool is eager. */
 	skill: (index, args, outcome, server = "auto-learn_auto-learn") => agyStream.call(index, "call_mcp_tool", { ServerName: server, ToolName: "manage_skill", Arguments: args }, outcome),
+	/** The same call as agy reports an eager tool: a tool of its own named `mcp_<server>_<tool>`, whose parameters are the arguments. */
+	eagerSkill: (index, args, outcome, server = "auto-learn_auto-learn") => agyStream.call(index, `mcp_${server}_manage_skill`, args, outcome),
 	result: (extra = {}, conversationId = AGY_CONVERSATION) => ({
 		event: "result",
 		result: { conversation_id: conversationId, status: "SUCCESS", response: "", duration_seconds: 5, num_turns: 1, usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, ...extra },

@@ -5,7 +5,8 @@
 // files agy keeps for a conversation in the store `--app_data_dir` names under
 // $HOME/.gemini, then reviews as $FAKE_AGY_MODE says:
 //   ok        a junk line, then one manage_skill call that saves a skill, and a successful result, all
-//             after $FAKE_AGY_DELAY milliseconds (default none)
+//             after $FAKE_AGY_DELAY milliseconds (default none); with $FAKE_AGY_EAGER set the call is
+//             reported as agy reports an eager tool
 //   refused   a manage_skill call that agy denied: the call is DONE without output, the result lists
 //             $FAKE_AGY_DENIED denials (default 1)
 //   failed    the result in $FAKE_AGY_RESULT (JSON, default {"status":"ERROR"}) and exit status 3
@@ -81,7 +82,7 @@ async function review() {
 		agyStream.init({}, conversationId),
 		agyStream.step(0, "DONE", "user_input", {}, conversationId),
 		agyStream.reply(1, { ...usage(2000, 500), output: 50 }),
-		agyStream.skill(2, save, outcome),
+		(process.env.FAKE_AGY_EAGER ? agyStream.eagerSkill : agyStream.skill)(2, save, outcome),
 		agyStream.reply(4, usage(2100, 2000)),
 		agyStream.result(mode === "refused" ? { denied_actions: Array.from({ length: Number(process.env.FAKE_AGY_DENIED ?? 1) }, () => ({ action: "mcp", display_name: "McpTool" })) } : {}, conversationId),
 	);

@@ -251,6 +251,22 @@ test("a review that saves a skill is ok, reports what it saved and used, and lea
 	assert.deepEqual(await w.stored(), EMPTY_STORE);
 });
 
+test("a review whose manage_skill is an eager tool, as the plugin's own config makes it, is not stopped, and its save counts", async (t) => {
+	const w = await world(t, "ok", { env: { FAKE_AGY_EAGER: "1" } });
+	assert.deepEqual(withoutDuration(await capture(w)), {
+		outcome: "ok",
+		deniedActions: 0,
+		skillCalls: 1,
+		otherToolCalls: 0,
+		otherTools: [],
+		...OK_TOKENS,
+		created: ["fake-skill"],
+		updated: [],
+		deleted: [],
+	});
+	assert.deepEqual(await w.stored(), EMPTY_STORE);
+});
+
 test("a review whose calls agy denied is an error that saved nothing, and its conversation is removed", async (t) => {
 	const plural = withoutDuration(await capture(await world(t, "refused", { env: { FAKE_AGY_DENIED: "2" } })));
 	assert.equal(plural.error, "agy denied 2 actions");

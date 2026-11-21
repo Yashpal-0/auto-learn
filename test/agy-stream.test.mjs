@@ -53,6 +53,24 @@ test("a recorded run whose permission was denied shows the denial and no save, t
 	assert.deepEqual(summary.saves, []);
 });
 
+test("a recorded run whose manage_skill is an eager tool reports the same save, with the reasoning inside the output tokens", () => {
+	const { said, summary } = analyze(recorded("agy-review-eager-stream.ndjson"));
+	assert.deepEqual(said, []);
+	assert.deepEqual(summary, {
+		conversationId: "54ba3f0d-2cc6-4085-b3ad-237552388f8b",
+		status: "SUCCESS",
+		deniedActions: 0,
+		skillCalls: 1,
+		saves: [{ action: "create", name: "inotify-watch-limit" }],
+		otherToolCalls: 0,
+		otherTools: [],
+		inputTokens: 8197 + 3478,
+		cacheReadTokens: 3478,
+		outputTokens: 6055,
+	});
+	assert.doesNotMatch(JSON.stringify(summary), /sysctl|watchers run out/);
+});
+
 test("a run agy could not start says why, clipped, and has no tokens", () => {
 	const error = `failed to construct executor: ${"x".repeat(900)}`;
 	const { summary } = analyze([stream.init(), stream.step(1, "DONE", "error_message"), stream.result({ status: "ERROR", error, finished_reason: "error" })]);
@@ -117,6 +135,16 @@ test("any tool but the plugin's manage_skill stops the review at the call, howev
 		"call_mcp_tool:auto-learn_other/manage_skill": stream.call(1, "call_mcp_tool", { ServerName: "auto-learn_other", ToolName: "manage_skill", Arguments: CREATE }),
 		"call_mcp_tool:notauto-learn/manage_skill": stream.call(1, "call_mcp_tool", { ServerName: "notauto-learn", ToolName: "manage_skill", Arguments: CREATE }),
 		"call_mcp_tool:?/?": stream.call(1, "call_mcp_tool", {}),
+		"mcp_github_create_issue": stream.call(1, "mcp_github_create_issue", {}),
+		"mcp_auto-learn_auto-learn_other": stream.call(1, "mcp_auto-learn_auto-learn_other", {}),
+		"mcp_auto-learn-evil_manage_skill": stream.call(1, "mcp_auto-learn-evil_manage_skill", CREATE),
+		"mcp_auto-learn_other_manage_skill": stream.call(1, "mcp_auto-learn_other_manage_skill", CREATE),
+		"mcp_notauto-learn_manage_skill": stream.call(1, "mcp_notauto-learn_manage_skill", CREATE),
+		"mcp__manage_skill": stream.call(1, "mcp__manage_skill", CREATE),
+		"mcp_manage_skill": stream.call(1, "mcp_manage_skill", CREATE),
+		"manage_skill": stream.call(1, "manage_skill", CREATE),
+		"x_mcp_auto-learn_auto-learn_manage_skill": stream.call(1, "x_mcp_auto-learn_auto-learn_manage_skill", CREATE),
+		"mcp_auto-learn_auto-learn_manage_skill_evil": stream.call(1, "mcp_auto-learn_auto-learn_manage_skill_evil", CREATE),
 		"unknown tool": [stream.step(1, "ACTIVE", "tool", { tool_info: {} })],
 	};
 	for (const [name, events] of Object.entries(stops)) {
@@ -128,12 +156,28 @@ test("any tool but the plugin's manage_skill stops the review at the call, howev
 	}
 });
 
-test("a manage_skill call of the plugin installed under another name is still the review's own", () => {
+test("a manage_skill call of the plugin installed under another name is still the review's own, as a lazy or an eager tool", () => {
 	for (const server of ["auto-learn_auto-learn", "auto-learn-2_auto-learn", "auto-learn"]) {
-		const { said, summary } = analyze(stream.skill(1, CREATE, { output: SAVED }, server));
-		assert.deepEqual(said, [], server);
-		assert.equal(summary.saves.length, 1, server);
+		for (const call of [stream.skill, stream.eagerSkill]) {
+			const { said, summary } = analyze(call(1, CREATE, { output: SAVED }, server));
+			assert.deepEqual(said, [], `${call.name} ${server}`);
+			assert.deepEqual(summary.saves, [{ action: "create", name: "inotify-watch-limit" }], `${call.name} ${server}`);
+		}
 	}
+});
+
+test("an eager manage_skill call is a save by the same rules as a lazy one", () => {
+	const none = (events) => assert.deepEqual(analyze(events).summary.saves, []);
+	none(stream.eagerSkill(1, CREATE, {}));
+	none(stream.eagerSkill(1, CREATE, { error: "A skill named \"inotify-watch-limit\" already exists." }));
+	none(stream.eagerSkill(1, { action: "read", name: "inotify-watch-limit" }, { output: "text" }));
+	none([stream.eagerSkill(1, CREATE, { output: SAVED })[0]]);
+	const { summary } = analyze([...stream.eagerSkill(1, CREATE, { output: SAVED }), ...stream.eagerSkill(2, { action: "delete", name: "old", revision: "r" }, { output: "Deleted skill." })]);
+	assert.equal(summary.skillCalls, 2);
+	assert.deepEqual(summary.saves, [
+		{ action: "create", name: "inotify-watch-limit" },
+		{ action: "delete", name: "old" },
+	]);
 });
 
 test("the tools agy gives every agent are tolerated and counted by name", () => {
@@ -192,6 +236,11 @@ test("denied actions are counted from the result, and anything that is no list c
 	assert.equal(analyze([stream.result({ denied_actions: [{ action: "mcp" }, { action: "run" }] })]).summary.deniedActions, 2);
 	assert.equal(analyze([stream.result({ denied_actions: "mcp" })]).summary.deniedActions, 0);
 	assert.equal(analyze([stream.result({ denied_actions: [] })]).summary.deniedActions, 0);
+});
+
+test("a tool name that is no string stops the review though it would read as the plugin's tool", () => {
+	const { said } = analyze(stream.call(1, ["mcp_auto-learn_auto-learn_manage_skill"], CREATE));
+	assert.deepEqual(said, [{ stop: "unknown tool" }]);
 });
 
 test("a tool that is not named stops the review, and its name is clipped", () => {

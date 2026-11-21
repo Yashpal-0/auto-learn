@@ -14,11 +14,19 @@ const MAX_TOOL_NAME_CHARS = 256;
 const TOLERATED_TOOLS = new Set(["list_resources", "read_resource", "manage_task"]);
 
 /**
- * agy names a plugin's MCP server `<plugin folder>_<server key>` and calls its
- * tools through `call_mcp_tool`. The key is `auto-learn`; the folder is the
- * plugin's name unless the user installed it under another.
+ * agy names a plugin's MCP server `<plugin folder>_<server key>`. The key is
+ * `auto-learn`; the folder is the plugin's name unless the user installed it
+ * under another.
  */
 const isOwnServer = (name) => typeof name === "string" && (name === "auto-learn" || name.endsWith("_auto-learn"));
+
+/**
+ * agy reports an eager tool, as the plugin's mcp_config.json makes manage_skill,
+ * as a tool of its own named `mcp_<server>_<tool>`, and a lazy one as a
+ * `call_mcp_tool` call. The name does not say where the server's name ends, so
+ * every server whose name passes `isOwnServer` counts, in both spellings.
+ */
+const EAGER_SKILL_TOOL = /^mcp_(.+)_manage_skill$/;
 
 const isObject = (value) => value !== null && typeof value === "object";
 const asText = (value) => (typeof value === "string" ? value : "?");
@@ -32,6 +40,8 @@ function judge(step) {
 		if (isOwnServer(parameters?.ServerName) && parameters.ToolName === "manage_skill") return { own: true, save: requestedSave(parameters.Arguments), settled: false };
 		return { foreign: `call_mcp_tool:${asText(parameters?.ServerName)}/${asText(parameters?.ToolName)}` };
 	}
+	const eager = typeof tool === "string" ? EAGER_SKILL_TOOL.exec(tool) : null;
+	if (eager !== null && isOwnServer(eager[1])) return { own: true, save: requestedSave(parameters), settled: false };
 	if (TOLERATED_TOOLS.has(tool)) return { own: false, tolerated: tool };
 	return { foreign: typeof tool === "string" ? tool : "unknown tool" };
 }
