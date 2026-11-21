@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 - 2026-11-22
+
+- auto-learn now runs in Antigravity CLI, the `agy` command. Install it with `agy plugin install https://github.com/Yashpal-0/auto-learn`. agy reads the new `.antigravity-plugin/plugin.json`, `hooks.json`, `mcp_config.json` and `agents/auto-learn-review.md`, and saves skills to `~/.gemini/config/skills`.
+- In agy, a turn with enough tool calls, in a terminal session of `agy`, is reviewed by a background `agy -p` run of the new `auto-learn-review` agent, in a conversation store of its own, `~/.gemini/auto-learn-review`. The excerpt of the turn goes in on stdin. The conversation is deleted when the review ends; agy keeps a one-line summary of it, the fixed first line of the request and the review's workspace path, in the review store.
+- agy: a review is stopped, with the outcome `stopped`, as soon as agy reports a call of any tool but `manage_skill`, and at its first event if agy runs it under another agent than `auto-learn-review`. That call may already have started, because agy lists its whole tool registry to the review, which runs with the permission mode `always-proceed`; the agent file's empty tool list does not limit it. The README says so under Limitations.
+- agy: turns of `agy -p`, `agy acp`, `--hub` and `--remote-agent`, conversations of the Antigravity IDE and app, and prompts typed as `/plan` are not reviewed. The Stop hook tells them apart from the process that runs it, which it reads from `/proc`, so automatic reviews work on Linux only. A session started with `agy --mode plan` is reviewed like any other.
+- agy: a `manage_skill` call counts as a save only when agy reports it done without an error and a line of its output begins with the message `manage_skill` prints for that action and skill. The worker ends everything its review started when the review ends, also when the review ends by itself.
+- agy: the `error` that the log keeps for a review that failed has each link cut down to its host and path, because agy's account-verification message holds a sign-in link with a token in its query.
+- agy: `manage_skill` has no `read` action, no revision check and no lock. `create` refuses a name that a skill in `~/.gemini/config/skills` or among agy's built-in skills already uses and, in a review, a name used in the project's `.agents/skills`.
+- agy: the options are the environment variables `CLAUDE_PLUGIN_OPTION_AUTOCAPTURE` and `CLAUDE_PLUGIN_OPTION_MINTOOLCALLS`, set before `agy` starts. The log is `~/.gemini/antigravity-cli/plugin_data/auto-learn/auto-learn.log`.
+- The plugin's review agent is listed by Claude Code, as `auto-learn:auto-learn-review`, and by Copilot CLI, which warns that it ignores some of the agent's fields. Its description says it is internal and not for delegation.
+- The capture worker is now started with `--host=codex` and `--host=copilot` as well as `--host=agy`; Claude Code's takes no argument.
+- Claude Code, Codex, GitHub Copilot and OpenCode behave as before.
+
 ## 0.4.0 - 2026-11-20
 
 - auto-learn now runs in GitHub Copilot CLI and in Copilot Chat on VS Code's Copilot agent host. Install it with `copilot plugin marketplace add Yashpal-0/auto-learn` and `copilot plugin install auto-learn@auto-learn`. Copilot reads the new `.github/plugin/plugin.json`, with its own hooks and MCP server, and saves skills to `~/.copilot/skills`.

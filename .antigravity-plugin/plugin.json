@@ -1,7 +1,7 @@
 {
   "name": "auto-learn",
   "displayName": "Auto-learn",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Learns skills from your work: after a turn that worked out something reusable, a background review saves the procedure as a personal skill that Antigravity CLI offers in later conversations.",
   "author": {
     "name": "Yashpal-0",
