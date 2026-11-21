@@ -153,10 +153,10 @@ test("the tools agy gives every agent are tolerated and counted by name", () => 
 
 test("tokens are those of the model requests so far, each reply counted once, and the result's own figures are not needed", () => {
 	const reply = stream.reply(1, { input: 8161, output: 240 });
-	const { summary } = analyze([stream.init(), reply, reply, stream.reply(3, { input: 2455, output: 7, thinking: 30, cacheRead: 6113 })]);
+	const { summary } = analyze([stream.init(), reply, reply, stream.reply(3, { input: 2455, output: 37, thinking: 30, cacheRead: 6113 })]);
 	assert.equal(summary.inputTokens, 8161 + 2455 + 6113);
 	assert.equal(summary.cacheReadTokens, 6113);
-	assert.equal(summary.outputTokens, 240 + 7 + 30);
+	assert.equal(summary.outputTokens, 240 + 37, "agy's output_tokens already holds the reasoning, thinking_tokens is a part of it");
 	assert.equal(summary.status, undefined);
 });
 
@@ -174,7 +174,7 @@ test("what is not an event of the stream, or is malformed, changes nothing", () 
 });
 
 test("fields of the wrong type are left out of the summary, and tokens that are no numbers count as none", () => {
-	const reply = stream.step(1, "DONE", "agent_response", { usage: { input_tokens: "5", output_tokens: null, thinking_tokens: Number.NaN, cache_read_tokens: [3] } });
+	const reply = stream.step(1, "DONE", "agent_response", { usage: { input_tokens: "5", output_tokens: null, cache_read_tokens: [3] } });
 	const { summary } = analyze([reply, stream.result({ status: 5, finished_reason: {}, error: 7 })]);
 	assert.deepEqual([summary.inputTokens, summary.cacheReadTokens, summary.outputTokens], [0, 0, 0]);
 	for (const key of ["status", "finishedReason", "error"]) assert.equal(key in summary, false, key);

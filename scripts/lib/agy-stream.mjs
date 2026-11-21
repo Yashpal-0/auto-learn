@@ -50,7 +50,7 @@ function judge(step) {
  * @property {string} [stoppedTool] the tool that stopped the review
  * @property {number} inputTokens all tokens the model read, those from its cache included (agy's input_tokens leaves them out)
  * @property {number} cacheReadTokens
- * @property {number} outputTokens replies plus thinking
+ * @property {number} outputTokens the tokens of its replies, which agy counts with the model's reasoning
  */
 
 /**
@@ -140,7 +140,7 @@ export function createStreamAnalyzer() {
 				stoppedTool,
 				inputTokens: sum("input_tokens") + sum("cache_read_tokens"),
 				cacheReadTokens: sum("cache_read_tokens"),
-				outputTokens: sum("output_tokens") + sum("thinking_tokens"),
+				outputTokens: sum("output_tokens"),
 			};
 			return Object.fromEntries(Object.entries(summary).filter(([, value]) => value !== undefined));
 		},
