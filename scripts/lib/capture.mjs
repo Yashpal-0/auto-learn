@@ -152,6 +152,15 @@ export async function isDirectory(target) {
 	}
 }
 
+export async function isFile(target) {
+	try {
+		return (await fs.stat(target)).isFile();
+	} catch (error) {
+		if (error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+
 /**
  * The {action, name} of a manage_skill call that changes a skill, from the
  * call's input, or undefined for a call that changes none or that a later

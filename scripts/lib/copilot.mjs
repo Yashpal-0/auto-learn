@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { boundedSink, forkEnvironment, isDirectory, noteToolName, requestedSave, skillChanges } from "./capture.mjs";
+import { boundedSink, forkEnvironment, isDirectory, isFile, noteToolName, requestedSave, skillChanges } from "./capture.mjs";
 import { loadOptions } from "./config.mjs";
 import { followLines, parseLine, readLines } from "./jsonl.mjs";
 import { captureNudge } from "./prompts.mjs";
@@ -139,15 +139,6 @@ export async function readCopilotTurn(file, start, stop, { timeoutMs = STOP_EVEN
 		{ timeoutMs: Math.max(0, deadline - performance.now()), pollDelay: () => STOP_EVENT_POLL_MS },
 	);
 	return { next, toolCalls: calls.size, mode, stopId, fusion };
-}
-
-async function isFile(file) {
-	try {
-		return (await fs.stat(file)).isFile();
-	} catch (error) {
-		if (error.code === "ENOENT") return false;
-		throw error;
-	}
 }
 
 /**
