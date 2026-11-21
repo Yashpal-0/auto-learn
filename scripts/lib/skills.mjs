@@ -203,8 +203,10 @@ export function cleanDescription(value) {
 async function createSkill(name, content, context) {
 	const projectSkills = await projectSkillsDir(context);
 	// A personal skill would shadow the project's skill of the same name.
-	const conflict = (context.host ?? "claude") === "claude" ? await claudeSkillConflict(name, context) :
-		await existingSkill(name, [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir, ...(context.builtinSkillsDirs ?? [])]);
+	const host = context.host ?? "claude";
+	const folders = [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir, ...(context.builtinSkillsDirs ?? [])];
+	const conflict = host === "claude" ? await claudeSkillConflict(name, context) :
+		(await existingSkill(name, folders)) ?? (host === "agy" ? await declaredSkill(name, folders) : undefined);
 	if (conflict) {
 		throw new Error(`A skill named "${name}" already exists at ${displayPath(conflict)}. Pick another name.`);
 	}
@@ -235,6 +237,23 @@ async function createSkill(name, content, context) {
 async function existingSkill(name, folders) {
 	for (const folder of folders) {
 		if (folder && (await entryType(path.join(folder, name)))) return path.join(folder, name);
+	}
+	return undefined;
+}
+
+/**
+ * The path of the first skill in `folders` whose SKILL.md declares `name`.
+ * agy lists a skill by that name, which can differ from its folder's:
+ * antigravity_guide holds "antigravity-guide". A personal skill of the same
+ * name would replace it.
+ */
+async function declaredSkill(name, folders) {
+	for (const folder of folders) {
+		if (!folder) continue;
+		for (const entry of await skillDirNames(folder)) {
+			const skill = await readSkillHead(path.join(folder, entry, "SKILL.md"));
+			if (skill && frontmatterField(skill.head, "name").toLowerCase() === name) return path.join(folder, entry);
+		}
 	}
 	return undefined;
 }

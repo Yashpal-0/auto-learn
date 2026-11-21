@@ -145,6 +145,28 @@ test("for Antigravity CLI, create also refuses the name of a builtin skill, whic
 	assert.match(await create(agy, "ship-docs"), /^Created skill/);
 });
 
+// Real builtin skills of agy 1.5.14 have folders that differ from their names: antigravity_guide holds "antigravity-guide", native_swarm holds "swarm".
+test("for Antigravity CLI, create refuses the name a skill declares in its SKILL.md, whatever its folder is called, in the builtin and project skills", async (t) => {
+	const { root, context } = await library(t);
+	const builtin = path.join(root, "builtin-skills");
+	const projectSkills = path.join(context.projectDir, ".agents", "skills");
+	const declared = async (dir, folder, frontmatter) => {
+		await fs.mkdir(path.join(dir, folder), { recursive: true });
+		await fs.writeFile(path.join(dir, folder, "SKILL.md"), `---\n${frontmatter}\n---\n\nHands off.\n`);
+	};
+	await declared(builtin, "antigravity_guide", "name: antigravity-guide\ndescription: Mine");
+	await declared(builtin, "native_swarm", 'name: "swarm"\ndescription: Mine');
+	await declared(builtin, "no_name_here", "description: Mine");
+	await declared(projectSkills, "ship_folder", "name: ship-it\ndescription: Mine");
+	const agy = { ...context, host: "agy", builtinSkillsDirs: [builtin] };
+	for (const [name, folder] of [["antigravity-guide", "antigravity_guide"], ["swarm", "native_swarm"], ["ship-it", "ship_folder"]]) {
+		await assert.rejects(create(agy, name), new RegExp(`already exists at .*${folder}.*another name`), name);
+		await assert.rejects(fs.access(path.join(context.skillsDir, name)), name);
+	}
+	assert.match(await create(agy, "native-swarm"), /^Created skill/);
+	assert.match(await create(agy, "ship-docs"), /^Created skill/);
+});
+
 test("for OpenCode, create refuses a name a project skill in .opencode/skills uses", async (t) => {
 	const { context } = await library(t);
 	await authoredSkill(path.join(context.projectDir, ".opencode", "skills"), "deploy-docs");
