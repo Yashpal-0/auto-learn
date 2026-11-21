@@ -196,6 +196,42 @@ export const agy = {
 	system: (stepIndex, content) => ({ step_index: stepIndex, source: "SYSTEM", type: "SYSTEM_MESSAGE", status: "DONE", created_at: AGY_TIME, content }),
 };
 
+export const AGY_CONVERSATION = "0d55435a-8aea-4f7a-9afa-d3d0fb319156";
+
+/** Events of `agy -p --output-format stream-json`, shaped as agy 1.5.14 prints them. */
+export const agyStream = {
+	init: (extra = {}, conversationId = AGY_CONVERSATION) => ({
+		event: "init",
+		conversation_id: conversationId,
+		init: { model: "gemini-test", cwd: "/work", agent: "auto-learn-review", tools: ["call_mcp_tool", "run_command"], permission_mode: "always-proceed", ...extra },
+	}),
+	step: (index, state, type, extra = {}, conversationId = AGY_CONVERSATION) => ({
+		event: "step_update",
+		step_update: { conversation_id: conversationId, step_index: index, state, step_type: type, ...extra },
+	}),
+	/** The DONE event of a model reply, with the tokens its request used. */
+	reply: (index, { input = 100, output = 10, thinking = 0, cacheRead = 0 } = {}) =>
+		agyStream.step(index, "DONE", "agent_response", {
+			duration_seconds: 1,
+			usage: { input_tokens: input, output_tokens: output, thinking_tokens: thinking, cache_read_tokens: cacheRead, total_tokens: input + output },
+		}),
+	/** A tool call: the ACTIVE event, then the DONE event, or the ERROR event when `error` is given. */
+	call: (index, name, parameters, { output, error } = {}) => [
+		agyStream.step(index, "ACTIVE", "tool", { tool_name: name, tool_info: { name, parameters } }),
+		agyStream.step(index, error === undefined ? "DONE" : "ERROR", "tool", {
+			tool_name: name,
+			duration_seconds: 0.2,
+			tool_info: { name, parameters, ...(output === undefined ? {} : { output }), ...(error === undefined ? {} : { error: { type: "TOOL_ERROR", message: error } }) },
+		}),
+	],
+	/** A call of the plugin's manage_skill, which agy makes through call_mcp_tool. */
+	skill: (index, args, outcome, server = "auto-learn_auto-learn") => agyStream.call(index, "call_mcp_tool", { ServerName: server, ToolName: "manage_skill", Arguments: args }, outcome),
+	result: (extra = {}, conversationId = AGY_CONVERSATION) => ({
+		event: "result",
+		result: { conversation_id: conversationId, status: "SUCCESS", response: "", duration_seconds: 5, num_turns: 1, usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, ...extra },
+	}),
+};
+
 /** One turn as agy writes it from step `first` on: the prompt, `count` tool calls each in a model step of its own followed by its result, and the closing reply. */
 export function agyTurn(first, count, prompt = "Set up the dev database") {
 	const records = [agy.prompt(first, prompt)];
