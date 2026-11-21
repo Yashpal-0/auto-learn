@@ -128,6 +128,21 @@ test("agy session start forgets the states of sessions last used over 30 days ag
 	assert.deepEqual(await s.state(), { offset: 0, toolCalls: 0 });
 });
 
+test("agy session start still adds its guidance when old session states cannot be forgotten, and logs that", async (t) => {
+	const s = await agySession(t);
+	const sessions = path.join(s.env.PLUGIN_DATA, "sessions");
+	await fs.mkdir(sessions, { recursive: true });
+	// Forgetting a session stats its file, and a link to itself fails with ELOOP, which pruning does not expect.
+	await fs.symlink("looped-session.json", path.join(sessions, "looped-session.json"));
+	const output = await s.run("session-start");
+	assert.match(output.injectSteps[0].systemMessage.systemMessage, /^# Skill library\n/);
+	assert.deepEqual(await s.state(), { offset: 0, toolCalls: 0 });
+	const [record, ...rest] = await s.log();
+	assert.deepEqual(rest, []);
+	assert.deepEqual([record.event, record.session, record.reason], ["warn", SESSION, "old session states could not be forgotten"]);
+	assert.match(record.error, /ELOOP/);
+});
+
 test("a conversation of the Antigravity IDE or app, or a hook input with no usable transcriptPath, gets nothing from either hook", async (t) => {
 	const s = await agySession(t);
 	await s.append(agyTurn(0, 5));

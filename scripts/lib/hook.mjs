@@ -15,13 +15,14 @@ import { guidanceText, learnedSkillsText } from "./prompts.mjs";
 import { readRolloutTurn, readSessionMeta } from "./rollout.mjs";
 import { learnedSkills } from "./skills.mjs";
 import { appendLog, forgetSession, isValidSessionId, pruneSessions, queueCapture, readSessionState, writeSessionState } from "./state.mjs";
-import { countToolCalls, readTranscriptRange } from "./transcript.mjs";
+import { clip, countToolCalls, readTranscriptRange } from "./transcript.mjs";
 
 const WORKER_SCRIPT = fileURLToPath(new URL("../capture.mjs", import.meta.url));
 /** The Codex session sources with someone at the keyboard: the terminal UI and app-server clients such as the IDE extension. */
 const ATTENDED_SOURCES = new Set(["cli", "vscode"]);
 /** agy has no session-end hook, so a session that nobody used for this long is forgotten when another starts. */
 const STALE_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_LOGGED_ERROR_CHARS = 500;
 
 /**
  * Handles one hook event and returns the JSON to print, if any.
@@ -79,7 +80,12 @@ async function sessionStart(dir, sessionId, input, env, host) {
 async function agySessionStart(dir, sessionId, input, env) {
 	if (!isCliTranscript(input.transcriptPath, homeOf(env))) return undefined;
 	await writeSessionState(dir, sessionId, { offset: 0, toolCalls: 0 });
-	await pruneSessions(dir, STALE_SESSION_MS);
+	try {
+		await pruneSessions(dir, STALE_SESSION_MS);
+	} catch (error) {
+		// Housekeeping must not cost the session its guidance; the log says it failed.
+		await appendLog(dir, { event: "warn", session: sessionId, reason: "old session states could not be forgotten", error: clip(error.message, MAX_LOGGED_ERROR_CHARS) });
+	}
 	return { injectSteps: [{ systemMessage: { systemMessage: await sessionContext(env, "agy") } }] };
 }
 
