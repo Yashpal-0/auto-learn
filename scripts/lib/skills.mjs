@@ -26,6 +26,15 @@ const CLAUDE_RESERVED_NAMES = new Set(["synced", "anthropic-skills"]);
 const MISSING = new Set(["ENOENT", "ENOTDIR"]);
 const runFile = promisify(execFile);
 
+const SAVED_VERBS = { create: "Created", update: "Updated", delete: "Deleted" };
+
+/**
+ * The words that start the message manageSkill returns once `action` has
+ * changed the skill `name`, which is the name as saved. A reader of that message
+ * can tell a save from an error that came back in the same place.
+ */
+export const savedMessageStart = (action, name) => `${SAVED_VERBS[action]} skill "${name}"`;
+
 const SECRET_PATTERNS = [
 	["a private key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/],
 	["an API key", /\bsk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}/],
@@ -230,7 +239,7 @@ async function createSkill(name, content, context) {
 		await fs.rm(dir, { recursive: true, force: true });
 		throw error;
 	}
-	return `Created skill "${name}" at ${displayPath(file)}.`;
+	return `${savedMessageStart("create", name)} at ${displayPath(file)}.`;
 }
 
 /** The path of the first skill called `name` in `folders`, skipping the missing ones, or undefined. */
@@ -268,14 +277,14 @@ async function updateSkill(name, content, context, revision) {
 	if (stats && stats.nlink > 1) throw new Error(`The SKILL.md of "${name}" has other hard links, so this tool will not replace it.`);
 	await checkRevision(name, file, revision, context);
 	await writeFileAtomic(file, content);
-	return `Updated skill "${name}" at ${displayPath(file)}.`;
+	return `${savedMessageStart("update", name)} at ${displayPath(file)}.`;
 }
 
 async function deleteSkill(name, context, revision) {
 	const dir = await managedSkillDir(name, context, "delete");
 	await checkRevision(name, path.join(dir, "SKILL.md"), revision, context);
 	await fs.rm(dir, { recursive: true });
-	return `Deleted skill "${name}".`;
+	return `${savedMessageStart("delete", name)}.`;
 }
 
 /** The directory of a skill this tool created, or an Error that says why it may not be changed. */
