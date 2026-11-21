@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { EXCERPT_LIMITS, renderTurn, scanTurn } from "../scripts/lib/agy-transcript.mjs";
+import { MAX_LINE_BYTES } from "../scripts/lib/jsonl.mjs";
 import { agy, agyTurn, tempDir, toJsonl } from "./helpers.mjs";
 
 /** A conversation agy 1.5.14 wrote for three shell commands, as it is. */
@@ -26,6 +27,33 @@ test("scanTurn takes the last turn, counts only its tool calls, and says where i
 	const records = [...agyTurn(0, 2, "First task"), ...agyTurn(10, 6, "Second task")];
 	const file = await transcript(t, records);
 	assert.deepEqual(await scanTurn(file), { offset: offsetOf(records, 6), promptId: "10", toolCalls: 6, end: await sizeOf(file) });
+});
+
+test("scanTurn and renderTurn count offsets in bytes: after multibyte text, the turn starts at its prompt", async (t) => {
+	const first = agyTurn(0, 2, "Déployer la base 日本語 🚀");
+	first[2] = agy.result(2, "Résultat: 成功 ✓");
+	const records = [...first, ...agyTurn(10, 2, "Second task")];
+	const file = await transcript(t, records);
+	const turn = await scanTurn(file);
+	assert.equal(turn.offset, offsetOf(records, first.length));
+	assert.match(await renderTurn(file, turn.offset, turn.end), /^\[user\]\nSecond task\n/);
+});
+
+test("scanTurn gives the true offset of the turn after a line too long to read", async (t) => {
+	const file = await transcript(t, agyTurn(0, 1, "First task"));
+	// agy may keep a whole tool output in one line; readLines leaves a line over its limit out.
+	const handle = await fs.open(file, "a");
+	try {
+		await handle.write(`{"step_index":5,"source":"MODEL","type":"GENERIC","status":"DONE","content":"`);
+		await handle.write(Buffer.alloc(MAX_LINE_BYTES, "x"));
+		await handle.write(`"}\n`);
+	} finally {
+		await handle.close();
+	}
+	const secondTurnStart = await sizeOf(file);
+	await fs.appendFile(file, toJsonl(agyTurn(10, 2, "Second task")));
+	const turn = await scanTurn(file);
+	assert.deepEqual([turn.offset, turn.promptId, turn.toolCalls], [secondTurnStart, "10", 2]);
 });
 
 test("scanTurn counts each call of a model step that makes several, and none for a step that makes none", async (t) => {

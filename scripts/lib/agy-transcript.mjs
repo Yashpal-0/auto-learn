@@ -38,11 +38,8 @@ export async function scanTurn(file, fromOffset = 0) {
 }
 
 async function scan(file, start, size) {
-	let position = start;
 	let turn;
-	const end = await readLines(file, start, size, (line) => {
-		const lineStart = position;
-		position += line.length + 1;
+	const end = await readLines(file, start, size, (line, lineStart) => {
 		const record = parseLine(line);
 		if (isPrompt(record)) turn = { offset: lineStart, promptId: String(record.step_index ?? lineStart), toolCalls: 0 };
 		else if (turn && record?.type === "PLANNER_RESPONSE" && Array.isArray(record.tool_calls)) turn.toolCalls += record.tool_calls.length;

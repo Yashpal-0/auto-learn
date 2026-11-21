@@ -5,17 +5,22 @@ import fs from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CHUNK_BYTES = 1024 * 1024;
-const MAX_LINE_BYTES = 64 * 1024 * 1024;
+/** The longest line readLines hands on; it leaves out a longer one, which callers cannot measure from the lines they get. */
+export const MAX_LINE_BYTES = 64 * 1024 * 1024;
 const NEWLINE = 0x0a;
 
-/** Calls `visit` with each complete line that starts in [start, end), and returns the offset just past the last one. */
+/**
+ * Calls `visit` with each complete line that starts in [start, end) and the
+ * offset in the file at which it starts, and returns the offset just past the
+ * last one.
+ */
 export async function readLines(file, start, end, visit) {
 	let next = start;
 	if (end <= start) return next;
 	const handle = await fs.open(file, "r");
 	try {
 		const buffer = Buffer.alloc(CHUNK_BYTES);
-		const split = lineSplitter(MAX_LINE_BYTES, visit);
+		const split = lineSplitter(MAX_LINE_BYTES, visit, start);
 		for (let position = start; position < end; ) {
 			const { bytesRead } = await handle.read(buffer, 0, Math.min(CHUNK_BYTES, end - position), position);
 			if (bytesRead === 0) break;
@@ -34,23 +39,29 @@ export async function readLines(file, start, end, visit) {
 /**
  * Splits bytes into lines. Returns a function to call with each chunk in
  * turn, which calls `visit` with each complete line, without its newline,
- * and leaves out every line over `limit` bytes. A line may share memory with
- * its chunk, so `visit` must not keep it; what the splitter holds of a
- * partial line it copies, so the caller may reuse a chunk's buffer.
+ * and the line's offset in bytes, counted from `firstOffset` at the first byte
+ * of the first chunk, and leaves out every line over `limit` bytes. A line may
+ * share memory with its chunk, so `visit` must not keep it; what the splitter
+ * holds of a partial line it copies, so the caller may reuse a chunk's buffer.
  */
-export function lineSplitter(limit, visit) {
+export function lineSplitter(limit, visit, firstOffset = 0) {
 	let pending = [];
 	let pendingBytes = 0;
 	let isSkippingLine = false;
+	let chunkOffset = firstOffset;
+	let lineOffset = firstOffset;
 	return (chunk) => {
+		const thisChunkOffset = chunkOffset;
+		chunkOffset += chunk.length;
 		let from = 0;
 		for (let newline = chunk.indexOf(NEWLINE); newline !== -1; newline = chunk.indexOf(NEWLINE, from)) {
 			const piece = chunk.subarray(from, newline);
-			if (!isSkippingLine && pendingBytes + piece.length <= limit) visit(pendingBytes ? Buffer.concat([...pending, piece]) : piece);
+			if (!isSkippingLine && pendingBytes + piece.length <= limit) visit(pendingBytes ? Buffer.concat([...pending, piece]) : piece, lineOffset);
 			pending = [];
 			pendingBytes = 0;
 			isSkippingLine = false;
 			from = newline + 1;
+			lineOffset = thisChunkOffset + from;
 		}
 		const rest = chunk.subarray(from);
 		if (isSkippingLine || rest.length === 0) return;
