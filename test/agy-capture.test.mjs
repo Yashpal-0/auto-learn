@@ -527,6 +527,35 @@ test("the worker started with --host=agy reviews an agy job from agy's data dire
 	assert.deepEqual(await w.stored(), EMPTY_STORE);
 });
 
+// The hook runs inside agy, which waits for it: a worker that the hook waited for, or that stayed in the hook's session, would hold agy up or die with the hook.
+test("the Stop hook returns while the review it started still runs, and the worker carries on in a session of its own", { timeout: 30000, skip: !existsSync("/proc/self/stat") && "no /proc" }, async (t) => {
+	const w = await world(t, "ok");
+	const gate = path.join(w.root, "gate");
+	w.env.FAKE_AGY_GATE = gate;
+	const input = { conversationId: AGY_CONVERSATION, transcriptPath: w.job.transcriptPath, cwd: w.job.projectDir, workspacePaths: [w.job.projectDir], lastUserInput: PROMPT };
+	try {
+		const hook = runUnderAgy([], [HOOK_SCRIPT, "stop", "--host=agy"], input, w.env);
+		const finished = await Promise.race([hook, sleep(10_000).then(() => "the hook waited for the review")]);
+		assert.deepEqual(finished, { code: 0, stdout: "{}\n", stderr: "" });
+
+		// The review has started and waits at the gate, so the hook returned first.
+		const review = await w.until((entry) => entry.args);
+		const log = (await fs.readFile(path.join(w.env.PLUGIN_DATA, "auto-learn.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+		assert.deepEqual(log.map((record) => record.event), ["queued"]);
+		// The fake's parent is the worker; a detached worker leads its own process group and session.
+		const stat = readFileSync(`/proc/${review.ppid}/stat`, "utf8");
+		const [, , group, session] = stat.slice(stat.lastIndexOf(")") + 2).split(" ").map(Number);
+		assert.deepEqual([group, session], [review.ppid, review.ppid]);
+
+		await fs.writeFile(gate, "");
+		const record = await captured(w.env, AGY_CONVERSATION);
+		assert.deepEqual([record.outcome, record.created], ["ok", ["fake-skill"]]);
+	} finally {
+		// Whatever happened above, release the fake, so that neither it nor the worker outlives the test.
+		await fs.writeFile(gate, "");
+	}
+});
+
 test("a worker that gets SIGTERM while its review runs aborts the review, logs it as aborted and exits", { timeout: 30000 }, async (t) => {
 	const w = await world(t, "hang");
 	await queueCapture(w.env.PLUGIN_DATA, w.job);

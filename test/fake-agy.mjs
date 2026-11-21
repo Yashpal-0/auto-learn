@@ -5,8 +5,8 @@
 // files agy keeps for a conversation in the store `--app_data_dir` names under
 // $HOME/.gemini, then reviews as $FAKE_AGY_MODE says:
 //   ok        a junk line, then one manage_skill call that saves a skill, and a successful result, all
-//             after $FAKE_AGY_DELAY milliseconds (default none); with $FAKE_AGY_EAGER set the call is
-//             reported as agy reports an eager tool
+//             after $FAKE_AGY_DELAY milliseconds (default none) and once the file $FAKE_AGY_GATE exists, if
+//             that is set; with $FAKE_AGY_EAGER set the call is reported as agy reports an eager tool
 //   refused   a manage_skill call that agy denied: the call is DONE without output, the result lists
 //             $FAKE_AGY_DENIED denials (default 1)
 //   failed    the result in $FAKE_AGY_RESULT (JSON, default {"status":"ERROR"}) and exit status 3
@@ -21,7 +21,7 @@
 //   crash     prints its init, then kills itself with SIGKILL
 //   badid     a conversation id that is not a UUID but names a path outside the store
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { AGY_CONVERSATION, agyStream } from "./helpers.mjs";
 
@@ -41,7 +41,7 @@ if (mode === "exit") {
 }
 
 const stdin = await readStdin();
-record({ args, cwd: process.cwd(), env: { ...process.env }, stdin });
+record({ args, cwd: process.cwd(), env: { ...process.env }, stdin, ppid: process.ppid });
 keepConversation(stdin);
 if (mode === "hang") hang();
 else if (mode === "stubborn") stubborn();
@@ -71,6 +71,9 @@ function keepConversation(prompt) {
 }
 
 async function review() {
+	// Bounded, so that a test that fails before it opens the gate leaves no fake behind.
+	const giveUp = Date.now() + 30_000;
+	while (process.env.FAKE_AGY_GATE && !existsSync(process.env.FAKE_AGY_GATE) && Date.now() < giveUp) await new Promise((resolve) => setTimeout(resolve, 20));
 	await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_AGY_DELAY ?? 0)));
 	const usage = (input, cacheRead) => ({ input, output: 5, cacheRead });
 	const save = { action: "create", name: "fake-skill", description: "Use when testing the fake", body: "1. Do it." };
