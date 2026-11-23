@@ -482,7 +482,7 @@ Learned skills stay in `~/.gemini/config/skills`. Uninstalling leaves the log's 
 
 auto-learn runs as a native OpenCode V2 server plugin. It adds `manage_skill` in the `auto_learn` namespace, lists discoverable learned skills in session instructions, and refreshes OpenCode's skill catalog after a save. It does not need a separate MCP server or the `claude` or `codex` commands.
 
-OpenCode's file watcher discovers new skill files asynchronously, so the catalog can lag a successful save briefly. Tested with OpenCode `2.3.0-dev` on Linux, using a local deterministic provider for manual and automatic saves; real-provider costs and cache reuse remain unmeasured.
+OpenCode's file watcher discovers new skill files asynchronously, so the catalog can lag a successful save briefly. Tested with OpenCode `2.3.2-dev` on Linux, using a local deterministic provider for manual and automatic saves; real-provider costs and cache reuse remain unmeasured.
 
 ### Install in OpenCode
 
@@ -504,7 +504,7 @@ opencode plugin update github:Yashpal-0/auto-learn
 
 ### How a review works in OpenCode
 
-1. A successfully completed root-session turn is eligible when it contains a user prompt, used at least `minToolCalls` tools, and did not use the `plan` agent. Child/subagent sessions, failed or interrupted turns, and synthetic-only work are not reviewed. Root sessions from `opencode run` are eligible too; OpenCode's public plugin API does not identify whether someone is at the keyboard.
+1. A successfully completed root-session turn is eligible when it contains a user prompt (or continued from an automatic mid-turn compaction), used at least `minToolCalls` tools (including nested tool calls inside Code Mode `execute`), and did not use the `plan` agent. Child/subagent sessions, failed or interrupted turns, manual compactions, and synthetic-only work are not reviewed. Root sessions from `opencode run` are eligible too; OpenCode's public plugin API does not identify whether someone is at the keyboard.
 2. The plugin requests a transient generation from the session's current context, using OpenCode's selected model and variant. This is not a new conversation turn or a fork: no review prompt or reply is added to history, and no review session appears in the session list. OpenCode counts the review's usage in the original session's totals.
 3. The review executes no tools. It returns JSON `null` or one proposed skill to create or update. The plugin validates the response and passes a proposal through the same skill store as `manage_skill`, including ownership, size, name and credential checks. Automatic reviews cannot delete skills.
 4. A new prompt or execution, moving or deleting the session, plugin unload, or a five-minute deadline discards a pending review result. At most one review runs per session and four per plugin location; turns that exceed that limit are skipped rather than queued. Reviews use no subprocesses.

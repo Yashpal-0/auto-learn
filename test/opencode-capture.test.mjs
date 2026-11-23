@@ -17,6 +17,31 @@ test("OpenCode counts tools only in the successfully completed turn identified b
 	assert.equal(selectTurn([], "evt_turn").skip, "the session has moved on");
 });
 
+test("OpenCode counts inner Code Mode toolCalls and falls back to 1 when execute ran none", () => {
+	const codemodeTurn = [
+		{ id: "msg_cm_user", type: "user", text: "Inspect and build", time: { created: 1 } },
+		{ id: "msg_cm_assistant", type: "assistant", agent: "build", content: [
+			{ type: "tool", id: "call_exec_1", name: "execute", state: { status: "completed", input: { code: "..." }, content: [{ type: "text", text: "ok" }], metadata: {
+				toolCalls: [{ tool: "read", status: "completed" }, { tool: "edit", status: "completed" }, { tool: "shell", status: "completed" }, { tool: "shell", status: "completed" }],
+			} } },
+			{ type: "tool", id: "call_exec_2", name: "execute", state: { status: "completed", input: { code: "return 1" }, content: [{ type: "text", text: "1" }], metadata: { toolCalls: [] } } },
+		], time: { created: 2, completed: 3 } },
+		{ id: "msg_cm", type: "idle", outcome: "succeeded", time: { created: 4 } },
+	];
+	assert.deepEqual(selectTurn(codemodeTurn, "evt_cm"), { turnID: "msg_cm", toolCalls: 5 });
+});
+
+test("OpenCode reviews turns that auto-compacted mid-flight while skipping manual compactions", () => {
+	const compacted = completedTurn(5, "build", "compact");
+	compacted[0] = { id: "msg_compact_0", type: "compaction", status: "completed", reason: "auto", summary: "Earlier steps", time: { created: 1 } };
+	assert.deepEqual(selectTurn(compacted, "evt_compact"), { turnID: "msg_compact", toolCalls: 5 });
+	const manual = [
+		{ id: "msg_manual_0", type: "compaction", status: "completed", reason: "manual", summary: "Compacted", time: { created: 1 } },
+		{ id: "msg_manual", type: "idle", outcome: "succeeded", time: { created: 2 } },
+	];
+	assert.equal(selectTurn(manual, "evt_manual").skip, "no user prompt in the turn");
+});
+
 test("OpenCode does not review synthetic-only work or let a new prompt become part of the finished turn", () => {
 	const synthetic = completedTurn();
 	synthetic[0].type = "synthetic";
@@ -49,12 +74,17 @@ test("a transient OpenCode review saves a validated proposal and logs only usage
 	assert.doesNotMatch(JSON.stringify(result), /verified build command|Use when building/);
 });
 
-test("a review may save nothing, but malformed, extra-field and destructive proposals are errors", async (t) => {
-	const nothing = await review(t, "null");
-	assert.equal(nothing.result.outcome, "ok");
-	assert.deepEqual(nothing.result.created, []);
-	await assert.rejects(fs.access(nothing.host.library));
-	for (const text of ["not json", "[]", JSON.stringify({ ...proposal, unexpected: "injected" }), JSON.stringify({ action: "delete", name: "native-build" }), "x".repeat(262145)]) {
+test("a review accepts Markdown-fenced JSON and whitespace, while rejecting extra prose or malformed proposals", async (t) => {
+	for (const text of ["null", "  null\n", "```json\nnull\n```", "```\nnull\n```"]) {
+		const nothing = await review(t, text);
+		assert.equal(nothing.result.outcome, "ok", text);
+		assert.deepEqual(nothing.result.created, []);
+		await assert.rejects(fs.access(nothing.host.library));
+	}
+	const fenced = await review(t, `\n\`\`\`json\n${JSON.stringify(proposal, null, 2)}\n\`\`\`\n`);
+	assert.equal(fenced.result.outcome, "ok");
+	assert.deepEqual(fenced.result.created, ["native-build"]);
+	for (const text of ["not json", "Here is the proposal:\n```json\nnull\n```", "[]", JSON.stringify({ ...proposal, unexpected: "injected" }), JSON.stringify({ action: "delete", name: "native-build" }), "x".repeat(262145)]) {
 		const { host, result } = await review(t, text);
 		assert.equal(result.outcome, "error");
 		assert.equal(result.error, "invalid review response");

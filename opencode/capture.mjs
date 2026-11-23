@@ -41,7 +41,6 @@ export async function setupCapture(ctx, { env, options, saveSkill, permissionAct
 			job.controller.signal.throwIfAborted();
 		}
 		event.tools = {};
-		event.options.maxTokens = 8192;
 	});
 	await ctx.permission.hook("evaluate", (event) => {
 		if (event.action === permissionAction && !event.source && active.has(event.sessionID) && event.effect === "ask") {
@@ -116,10 +115,12 @@ export function selectTurn(messages, eventID) {
 	let start = messages.length - 2;
 	while (start >= 0 && messages[start].type !== "idle") start--;
 	const turn = messages.slice(start + 1, -1);
-	if (!turn.some((message) => message.type === "user")) return { skip: "no user prompt in the turn" };
 	const replies = turn.filter((message) => message.type === "assistant");
+	const compacted = turn[0]?.type === "compaction" && turn[0].status === "completed" && turn[0].reason === "auto" && replies.length > 0;
+	if (!compacted && !turn.some((message) => message.type === "user")) return { skip: "no user prompt in the turn" };
 	if (replies.some((message) => message.agent === "plan")) return { skip: "plan mode" };
-	const toolCalls = replies.reduce((count, message) => count + message.content.filter((part) => part.type === "tool").length, 0);
+	const toolCalls = replies.reduce((count, message) => count + message.content.reduce((sum, part) =>
+		part.type !== "tool" ? sum : sum + Math.max(1, Array.isArray(part.state?.metadata?.toolCalls) ? part.state.metadata.toolCalls.length : 0), 0), 0);
 	return { turnID: end.id, toolCalls };
 }
 
@@ -157,7 +158,9 @@ export async function reviewTurn(ctx, job, { saveSkill, signal, timeoutMs = CAPT
 
 function parseProposal(text) {
 	if (typeof text !== "string" || Buffer.byteLength(text) > MAX_REVIEW_BYTES) throw new Error("Invalid response size.");
-	const proposal = JSON.parse(text);
+	const trimmed = text.trim();
+	const unwrapped = /^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)?.[1] ?? trimmed;
+	const proposal = JSON.parse(unwrapped);
 	if (proposal === null) return null;
 	if (typeof proposal !== "object" || Array.isArray(proposal) ||
 		(proposal.action !== "create" && proposal.action !== "update") ||

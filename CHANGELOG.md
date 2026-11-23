@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 - 2026-11-23
+
+- OpenCode: Code Mode `execute` parts now count their nested `state.metadata.toolCalls` toward `minToolCalls`, falling back to `1` when a script invoked no inner tools.
+- OpenCode: turns that auto-compacted mid-flight remain eligible for review instead of being skipped as having no user prompt, while manual `/compact` runs and synthetic-only turns stay skipped.
+- OpenCode: session guidance and the learned-skills listing now attach on `compaction` and `generate` as well as `context` so reviews see managed skills, keep the session's system-prompt prefix, resolve symlinked skill folders, and survive transient catalog errors.
+- OpenCode: transient reviews no longer force `maxTokens: 8192` (which broke extended-thinking budgets, high-reasoning models and 4k-output models) and accept single Markdown code fences around JSON replies.
+- OpenCode: `manage_skill` validates `action` and `name` before asserting permissions and passes `save: ["*"]` so choosing **Allow always** in OpenCode stores the project approval pattern.
+
 ## 0.5.0 - 2026-11-22
 
 - auto-learn now runs in Antigravity CLI, the `agy` command. Install it with `agy plugin install https://github.com/Yashpal-0/auto-learn`. agy reads the new `.antigravity-plugin/plugin.json`, `hooks.json`, `mcp_config.json` and `agents/auto-learn-review.md`, and saves skills to `~/.gemini/config/skills`.

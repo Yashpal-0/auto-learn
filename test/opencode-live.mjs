@@ -17,7 +17,7 @@ const logDir = path.join(root, "data", "opencode", "auto-learn");
 const password = randomBytes(24).toString("hex");
 const manual = { action: "create", name: "live-manual", description: "Use when testing manual native saves", body: "Run the verified manual fixture." };
 const automatic = { action: "create", name: "live-automatic", description: "Use when testing automatic native saves", body: "Run the verified automatic fixture." };
-const observed = { main: 0, review: 0, reviewTools: [] };
+const observed = { main: 0, review: 0, reviewTools: [], reviewSystem: "" };
 let server;
 let serverOutput = "";
 let succeeded = false;
@@ -37,12 +37,17 @@ const provider = http.createServer(async (req, res) => {
 		if (review) {
 			observed.review++;
 			observed.reviewTools = input.tools ?? [];
-			message.content = JSON.stringify(automatic);
+			observed.reviewSystem = JSON.stringify((input.messages ?? []).filter((m) => m.role === "system" || m.role === "developer"));
+			message.content = `\`\`\`json\n${JSON.stringify(automatic)}\n\`\`\``;
 		} else if (!hasResult && input.tools?.some((tool) => tool.function?.name === "execute")) {
 			observed.main++;
+			const dir = JSON.stringify(project);
 			message = { role: "assistant", content: null, tool_calls: [{
 				id: "call_native_save", type: "function", function: {
-					name: "execute", arguments: JSON.stringify({ code: `return await tools.auto_learn.manage_skill(${JSON.stringify(manual)});` }),
+					name: "execute", arguments: JSON.stringify({ code: [
+						`await Promise.all([tools.read({ path: ${dir} }), tools.read({ path: ${dir} }), tools.read({ path: ${dir} }), tools.read({ path: ${dir} })]);`,
+						`return await tools.auto_learn.manage_skill(${JSON.stringify(manual)});`,
+					].join("\n") }),
 				},
 			}] };
 			finish = "tool_calls";
@@ -117,7 +122,7 @@ try {
 		$schema: "https://opencode.ai/config.json",
 		model: "fixture/fixture",
 		update: "disable",
-		plugins: [{ package: installed, options: { minToolCalls: 1 } }],
+		plugins: [installed],
 		permissions: [{ action: "*", resource: "*", effect: "allow" }],
 		providers: { fixture: {
 			name: "Local test provider", package: "@opencode/ai/providers/openai-compatible",
@@ -198,6 +203,7 @@ try {
 	assert.equal(observed.main, 1);
 	assert.equal(observed.review, 1);
 	assert.deepEqual(observed.reviewTools, []);
+	assert.match(observed.reviewSystem, /# Skill library/);
 	console.log(JSON.stringify({ package: `${packed.name}@${packed.version}`, nativePlugin: true, manualSave: true, automaticSave: true, reviewTools: observed.reviewTools, capture: result }));
 	succeeded = true;
 } catch (error) {

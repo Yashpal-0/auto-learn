@@ -27,9 +27,17 @@ export async function nativeHost(t) {
 	const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
 	const session = { id: "ses_native", projectID: "project", agent: "build", cost: 0, tokens, time: { created: 1, updated: 1 }, location: { directory: project } };
 	const host = { root, library, project, env, hooks, tools, storage, events, saved, generated, finished, session, catalog: [], messages: [], generations: 0, prompts: 0 };
+	const lists = { session: new Map(), permission: new Map() };
 	const register = (domain) => async (name, callback) => {
-		hooks[domain].set(name, callback);
-		return { dispose: async () => hooks[domain].delete(name) };
+		const list = lists[domain].get(name) ?? [];
+		list.push(callback);
+		lists[domain].set(name, list);
+		hooks[domain].set(name, async (event) => { for (const fn of [...list]) await fn(event); });
+		return { dispose: async () => {
+			const next = (lists[domain].get(name) ?? []).filter((fn) => fn !== callback);
+			if (next.length) lists[domain].set(name, next);
+			else { lists[domain].delete(name); hooks[domain].delete(name); }
+		} };
 	};
 	const ctx = {
 		options: {},
@@ -58,6 +66,7 @@ export async function nativeHost(t) {
 		permission: {
 			hook: register("permission"),
 			assert: async (input) => {
+				host.lastPermissionAssert = input;
 				if (host.permission === "deny") throw new Error("Permission denied");
 				const event = { ...input, effect: host.permission ?? "allow" };
 				await hooks.permission.get("evaluate")?.(event);

@@ -23,6 +23,8 @@ test("the native plugin registers a skill tool that saves through the managed st
 	assert.equal(tool.options.namespace, "auto_learn");
 	assert.deepEqual(tool.input.required, ["action", "name"]);
 	const result = await tool.execute(proposal, call);
+	assert.deepEqual(host.lastPermissionAssert.resources, ["native-build"]);
+	assert.deepEqual(host.lastPermissionAssert.save, ["*"]);
 	assert.match(result.content, /Created skill "native-build"/);
 	assert.match(await fs.readFile(path.join(host.library, "native-build", "SKILL.md"), "utf8"), /Run the verified build command/);
 	await fs.access(path.join(host.library, "native-build", MARKER_FILE));
@@ -37,6 +39,10 @@ test("native saves respect permissions and refuse collisions anywhere in OpenCod
 	await assert.rejects(tool.execute({ ...proposal, name: " Native-Build " }, call), /already exists/);
 	await assert.rejects(fs.access(host.library));
 	host.catalog = [];
+	host.permission = "ask";
+	await assert.rejects(tool.execute({ ...proposal, name: "bad name!" }, call), /valid skill name/);
+	await assert.rejects(tool.execute(undefined, call), /action must be/);
+	assert.equal(host.prompts, 0);
 	host.permission = "deny";
 	await assert.rejects(tool.execute(proposal, call), /Permission denied/);
 	await assert.rejects(fs.access(host.library));
@@ -51,17 +57,31 @@ test("native saves refuse sessions that moved to another directory or workspace"
 	}
 });
 
-test("native context guidance includes only managed skills that remain discoverable and autoinvokable", async (t) => {
-	const host = await setup(t, { autoCapture: false });
+test("native session guidance runs on context, compaction and generate, handles symlinks, and survives catalog errors", async (t) => {
+	const host = await nativeHost(t);
+	const realLibrary = path.join(host.root, "real-skills");
+	await fs.mkdir(realLibrary, { recursive: true });
+	await fs.symlink(realLibrary, host.library);
+	host.ctx.options = { autoCapture: false };
+	const cleanup = await setupOpenCode(host.ctx, { env: host.env });
+	t.after(cleanup);
 	await host.tools.get("manage_skill").execute(proposal, call);
-	const request = { sessionID: "ses_native", agent: "build", system: [] };
-	await host.hooks.session.get("context")(request);
-	assert.match(request.system.at(-1).text, /auto_learn/);
-	assert.match(request.system.at(-1).text, /native-build: Use when building this project/);
-	host.ctx.skill.list = async () => ({ location: { directory: host.project }, data: [{ id: "native-build", path: path.join(host.library, "native-build", "SKILL.md"), autoinvoke: false }] });
-	const hidden = { ...request, system: [] };
+	// Simulate OpenCode reporting realpath while AUTO_LEARN_SKILLS_DIR is a symlink
+	host.ctx.skill.list = async () => ({ location: { directory: host.project }, data: [{ id: "native-build", path: path.join(realLibrary, "native-build", "SKILL.md") }] });
+	for (const hook of ["context", "compaction", "generate"]) {
+		const request = { sessionID: "ses_native", agent: "build", system: [] };
+		await host.hooks.session.get(hook)(request);
+		assert.match(request.system.at(-1).text, /auto_learn/, hook);
+		assert.match(request.system.at(-1).text, /native-build: Use when building this project/, hook);
+	}
+	host.ctx.skill.list = async () => ({ location: { directory: host.project }, data: [{ id: "native-build", path: path.join(realLibrary, "native-build", "SKILL.md"), autoinvoke: false }] });
+	const hidden = { sessionID: "ses_native", agent: "build", system: [] };
 	await host.hooks.session.get("context")(hidden);
 	assert.doesNotMatch(hidden.system.at(-1).text, /native-build:/);
+	host.ctx.skill.list = async () => { throw new Error("transient catalog failure"); };
+	const resilient = { sessionID: "ses_native", agent: "build", system: [] };
+	await host.hooks.session.get("context")(resilient);
+	assert.match(resilient.system.at(-1).text, /auto_learn/);
 });
 
 test("native plugin options reject unsafe thresholds instead of disabling reviews accidentally", async (t) => {
@@ -81,7 +101,10 @@ test("successful native turns trigger a tool-free review once and refresh the sa
 	host.response = { text: JSON.stringify(proposal), cost: 0.01, tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 30, write: 0 } } };
 	await host.send(successEvent(host.project));
 	await host.finished.promise;
-	assert.deepEqual((await host.generated.promise).tools, {});
+	const generated = await host.generated.promise;
+	assert.deepEqual(generated.tools, {});
+	assert.equal(generated.options.maxTokens, undefined);
+	assert.match(generated.system.at(-1)?.text ?? "", /auto_learn/);
 	assert.match(await fs.readFile(path.join(host.library, "native-build", "SKILL.md"), "utf8"), /verified build command/);
 	const log = (await fs.readFile(logFile(host), "utf8")).trim().split("\n").map(JSON.parse);
 	assert.equal(log[0].event, "queued");
