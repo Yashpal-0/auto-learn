@@ -75,11 +75,11 @@ test("native session guidance runs on context, compaction and generate, handles 
 		assert.match(request.system.at(-1).text, /native-build: Use when building this project/, hook);
 	}
 	host.ctx.skill.list = async () => ({ location: { directory: host.project }, data: [{ id: "native-build", path: path.join(realLibrary, "native-build", "SKILL.md"), autoinvoke: false }] });
-	const hidden = { sessionID: "ses_native", agent: "build", system: [] };
+	const hidden = { sessionID: "ses_hidden", agent: "build", system: [] };
 	await host.hooks.session.get("context")(hidden);
 	assert.doesNotMatch(hidden.system.at(-1).text, /native-build:/);
 	host.ctx.skill.list = async () => { throw new Error("transient catalog failure"); };
-	const resilient = { sessionID: "ses_native", agent: "build", system: [] };
+	const resilient = { sessionID: "ses_resilient", agent: "build", system: [] };
 	await host.hooks.session.get("context")(resilient);
 	assert.match(resilient.system.at(-1).text, /auto_learn/);
 });

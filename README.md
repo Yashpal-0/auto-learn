@@ -480,7 +480,7 @@ Learned skills stay in `~/.gemini/config/skills`. Uninstalling leaves the log's 
 
 ## OpenCode
 
-auto-learn runs as a native OpenCode V2 server plugin. It adds `manage_skill` in the `auto_learn` namespace, lists discoverable learned skills in session instructions, and refreshes OpenCode's skill catalog after a save. It does not need a separate MCP server or the `claude` or `codex` commands.
+auto-learn runs as a native OpenCode V2 server plugin. It adds `manage_skill` in the `auto_learn` namespace, lists discoverable learned skills in session instructions, and refreshes OpenCode's skill catalog after a save. The list is built when a session first runs and again after each compaction, because it sits in the cached prompt prefix: a skill saved mid-session appears after the next compaction or in a new session. It does not need a separate MCP server or the `claude` or `codex` commands.
 
 OpenCode's file watcher discovers new skill files asynchronously, so the catalog can lag a successful save briefly. Tested with OpenCode `2.3.2-dev` on Linux, using a local deterministic provider for manual and automatic saves; real-provider costs and cache reuse remain unmeasured.
 

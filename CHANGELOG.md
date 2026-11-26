@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 - 2026-11-26
+
+- OpenCode: the learned-skills list in the session guidance is built once per session and again after each compaction, not on every request. It sits in the cached system prompt, so each saved or updated skill changed it and made every open session re-bill its whole history at uncached rates on the next request. A skill saved mid-session is now listed after that session's next compaction, or in a new session.
+
 ## 0.5.3 - 2026-11-26
 
 - All hosts: `manage_skill` also refuses shell-execution syntax that an argument placeholder leads into (`` $ARGUMENTS!`cmd` ``, a fence line ```` ```$1! ````), because Claude Code fills the placeholders in first, and a body that `@`-mentions a file outside the project (an absolute, `~`, quoted or `..` path), which Claude Code attaches when the skill loads. The `@` check rests on a reading of Claude Code's code, not on a live run; plain relative `@path` mentions and `@` inside words stay allowed.

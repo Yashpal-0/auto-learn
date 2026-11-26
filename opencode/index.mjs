@@ -66,8 +66,7 @@ export async function setupOpenCode(ctx, { env = process.env } = {}) {
 	});
 
 	const realPath = (target) => fs.realpath(target).catch(() => path.resolve(target));
-	const injectGuidance = async (event) => {
-		if (!Array.isArray(event.system)) return;
+	const buildGuidance = async () => {
 		let visible = [];
 		try {
 			const [{ data: catalog }, learned, realLibrary] = await Promise.all([
@@ -86,9 +85,26 @@ export async function setupOpenCode(ctx, { env = process.env } = {}) {
 		} catch {
 			console.error("auto-learn: could not read the skill catalog for session guidance.");
 		}
-		event.system.push({ type: "text", text: [guidanceText(library, "opencode"), learnedSkillsText(visible, "opencode")].filter(Boolean).join("\n\n") });
+		return [guidanceText(library, "opencode"), learnedSkillsText(visible, "opencode")].filter(Boolean).join("\n\n");
 	};
-	for (const hook of ["context", "compaction", "generate"]) await ctx.session.hook(hook, injectGuidance);
+	// The text sits in the cached system prefix: rebuilding it on every request re-bills the whole conversation whenever a
+	// skill is saved. Build it once per session and again only when a compaction re-baselines the prefix anyway.
+	// shortcut: a skill saved mid-session is listed after that session's next compaction (or in a new session); upgrade if that is too late.
+	const frozen = new Map();
+	const injectGuidance = (refresh) => async (event) => {
+		if (!Array.isArray(event.system)) return;
+		const key = event.sessionID;
+		let text = key === undefined || refresh ? undefined : frozen.get(key);
+		if (!text) {
+			text = buildGuidance();
+			if (key !== undefined) {
+				if (!frozen.has(key) && frozen.size >= 200) frozen.delete(frozen.keys().next().value);
+				frozen.set(key, text);
+			}
+		}
+		event.system.push({ type: "text", text: await text });
+	};
+	for (const [hook, refresh] of [["context", false], ["compaction", true], ["generate", false]]) await ctx.session.hook(hook, injectGuidance(refresh));
 
 	const stopCapture = options.autoCapture ? await setupCapture(ctx, { env, options, saveSkill, permissionAction: TOOL_NAME }) : async () => {};
 	return async () => {
