@@ -106,6 +106,13 @@ test("a settings file that is not valid JSON hides no learned skill", async (t) 
 	assert.deepEqual(await listedSkills(s), ["deploy-docs: Use for deploy-docs"]);
 });
 
+test("a settings file that cannot be read hides no learned skill and costs no guidance", async (t) => {
+	const s = await session(t);
+	await learn(s, "deploy-docs");
+	await fs.mkdir(path.join(s.env.CLAUDE_CONFIG_DIR, "settings.json"), { recursive: true });
+	assert.deepEqual(await listedSkills(s), ["deploy-docs: Use for deploy-docs"]);
+});
+
 test("a new session starts its first turn at the beginning of the transcript", async (t) => {
 	const s = await session(t);
 	await s.run("session-start", { source: "startup" });

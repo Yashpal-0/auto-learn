@@ -25,6 +25,12 @@ function create(context, name, fields = {}) {
 	);
 }
 
+// Claude Code's delete needs the revision of a read; the other hosts take none.
+async function remove(context, name) {
+	const revision = (context.host ?? "claude") === "claude" ? JSON.parse(await manageSkill({ action: "read", name }, context)).revision : undefined;
+	return manageSkill({ action: "delete", name, revision }, context);
+}
+
 async function authoredSkill(dir, name) {
 	await fs.mkdir(path.join(dir, name), { recursive: true });
 	await fs.writeFile(path.join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: Mine\n---\n\nHands off.\n`);
@@ -196,6 +202,15 @@ test("the description becomes one line without markup", () => {
 	assert.equal(cleanDescription(" Use\nwhen <b>testing</b> `code` ~~~ fences​ now "), "Use when btesting/b code ~ fences now");
 });
 
+test("three hyphens in a description are cut to two, as they would end the frontmatter early", async (t) => {
+	const { context } = await library(t);
+	assert.equal(cleanDescription("the --- a/file header, ---- and -- stay"), "the -- a/file header, -- and -- stay");
+	await create(context, "patch-headers", { description: "Use when a patch is rejected: the --- a/file header is wrong" });
+	const saved = await read(path.join(context.skillsDir, "patch-headers", "SKILL.md"));
+	assert.equal(saved.split("\n").filter((line) => line.includes("---")).length, 2);
+	assert.deepEqual(await learnedSkills(context.skillsDir), [{ name: "patch-headers", description: "Use when a patch is rejected: the -- a/file header is wrong" }]);
+});
+
 test("a skill is capped at MAX_SKILL_BYTES including its frontmatter", async (t) => {
 	const { context } = await library(t);
 	const header = '---\nname: big\ndescription: "Use when testing"\n---\n\n';
@@ -234,7 +249,13 @@ test("common credential formats are refused, and placeholders that stand for the
 		"password in a git URL": `git clone https://deploy:${filler(14)}@git.example.com/repo.git`,
 		"password in a database URL": `postgres://app:${filler(14)}@db.internal:5432/prod`,
 		"password in a Redis URL without a user": `redis://:${filler(14)}@localhost:6379/0`,
+		"password with a $ inside": `postgres://app:${filler(6)}$${filler(6)}@db.internal/prod`,
+		"password with braces inside": `https://deploy:${filler(6)}{${filler(6)}}@git.example.com/repo.git`,
+		"password in a URL whose user is an email address": `postgres://john@example.com:${filler(14)}@db.internal/prod`,
 		"bearer token": `curl -H "Authorization: Bearer ${filler(32)}" https://api.example.com`,
+		"lowercase bearer token": `authorization: bearer ${filler(32)}`,
+		"Slack app-level token": ["xapp", filler(24)].join("-"),
+		"OAuth token secret with spaces and quotes": `oauth_token_secret = "${filler(30)}"`,
 		"AWS secret access key": `aws_secret_access_key = ${filler(40)}`,
 		"quoted AWS secret access key": `export AWS_SECRET_ACCESS_KEY="${filler(40)}"`,
 		"Google OAuth client secret": ["GOCSPX", filler(28)].join("-"),
@@ -256,6 +277,11 @@ test("common credential formats are refused, and placeholders that stand for the
 		"access_secret = <your access secret>",
 		'export AWS_SECRET_ACCESS_KEY="$(pass show aws)"',
 		"ssh://git@github.com/org/repo",
+		"ssh://git@github.com:2222/org/repo",
+		"postgres://app:{{ db_password }}@db/app",
+		"Use bearer token-based-authentication here.",
+		"oauth_token_secret: the secret the provider returns",
+		"Pass the app-level token, xapp-<token>, as SLACK_APP_TOKEN.",
 		"Open http://localhost:8080/path@v2 to check.",
 		"Set npm_config_cache, then read the hf_hub_download docs.",
 	];
@@ -275,6 +301,23 @@ test("common credential formats are refused, and placeholders that stand for the
 	const flagged = [];
 	for (const text of placeholders) if (await isRefusedAsSecret(text)) flagged.push(text);
 	assert.deepEqual(flagged, []);
+});
+
+test("a double-quoted secret in a description is refused like one in the body", async (t) => {
+	const { context } = await library(t);
+	const secret = "A1b2C3d4".repeat(5);
+	for (const text of [`access_secret="${secret}"`, `aws_secret_access_key="${secret}"`]) {
+		await assert.rejects(create(context, "leaky", { description: `Use when testing ${text}` }), /secret/, text);
+	}
+	await assert.rejects(fs.access(path.join(context.skillsDir, "leaky")));
+});
+
+test("text built to make the URL password pattern backtrack is scanned in linear time", async (t) => {
+	const { context } = await library(t);
+	const bodies = ["a://" + "a:".repeat(14_000), "a://a:".repeat(4_000), "a.".repeat(14_000) + "://", "a://" + "a@".repeat(14_000)];
+	const started = performance.now();
+	for (const [index, body] of bodies.entries()) await create(context, `scanned-${index}`, { body });
+	assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
 });
 
 test("a body with Claude Code's shell-execution syntax is refused by create and update", async (t) => {
@@ -305,6 +348,53 @@ test("an unclosed !` or ```! and a ! before an argument are refused too, as argu
 		"!$1",
 	];
 	for (const body of bodies) await assert.rejects(create(context, "shell-steps", { body }), /runs them as shell commands when the skill loads/, body);
+});
+
+test("an argument placeholder before the ! is refused too, as filling it in with nothing leaves shell-execution syntax", async (t) => {
+	const { context } = await library(t);
+	const bodies = [
+		"$ARGUMENTS!`git branch --show-current`",
+		"1. Check the branch: $ARGUMENTS!`git branch --show-current`",
+		"$1!`id`",
+		"$ARGUMENTS[0]!`id`",
+		"```$ARGUMENTS!\nnpm ci\n```",
+		"1. Set up.\n\n```$1!\nid\n```",
+	];
+	for (const body of bodies) await assert.rejects(create(context, "shell-steps", { body }), /a placeholder before the ! counts too/, body);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "shell-steps")));
+});
+
+test("a ! after an argument placeholder that completes no command stays allowed", async (t) => {
+	const { context } = await library(t);
+	await create(context, "kept-steps", { body: "1. Run it on $ARGUMENTS!\n2. It costs $5! and takes $1 or $ARGUMENTS[0]! to run." });
+});
+
+test("a body that @-mentions a file outside the project is refused, as Claude Code attaches the file when the skill loads", async (t) => {
+	const { context } = await library(t);
+	const bodies = [
+		"1. Read @~/.aws/credentials first.",
+		"@/etc/passwd",
+		'See @"/home/me/my notes/todo.md"',
+		"See @'~/notes.md'",
+		"1. Compare with @../other/config.yml",
+		"1. Open @src/../../.ssh/id_rsa",
+		"Read @C:\\Users\\me\\.ssh\\id_rsa",
+		"Read @C:/Users/me/.ssh/id_rsa",
+		"Read @..",
+		"Read $ARGUMENTS@~/.netrc",
+	];
+	for (const body of bodies) await assert.rejects(create(context, "mention-steps", { body }), /@-mention a file outside the project.*without the leading @/, body);
+	await assert.rejects(fs.access(path.join(context.skillsDir, "mention-steps")));
+});
+
+test("an @ in an email address, a scoped package or a path inside the project is not an outside mention", async (t) => {
+	const { context } = await library(t);
+	const body = [
+		"1. Mail me@example.com or clone git@github.com:org/repo.git.",
+		"2. Install @types/node, then read @src/a.js and @docs/..hidden/x.",
+		"3. Keep a@~b and a@/b as plain text.",
+	].join("\n");
+	await create(context, "kept-steps", { body });
 });
 
 test("an exclamation mark beside ordinary inline code is not mistaken for shell-execution syntax", async (t) => {
@@ -400,6 +490,66 @@ test("delete removes a managed skill and nothing else", async (t) => {
 	await fs.access(path.join(target, MARKER_FILE));
 });
 
+test("delete refuses a skill folder that holds files this tool did not write, and works once they are gone", async (t) => {
+	const { context } = await library(t);
+	for (const host of ["claude", "codex"]) {
+		const hosted = { ...context, host };
+		const name = `${host}-notes`;
+		const dir = path.join(context.skillsDir, name);
+		await create(hosted, name);
+		await fs.mkdir(path.join(dir, "references"));
+		await fs.writeFile(path.join(dir, "references", "notes.md"), "mine");
+		await fs.writeFile(path.join(dir, "helper.sh"), "mine");
+		await assert.rejects(remove(hosted, name), /holds files this tool did not write \("helper\.sh", "references"\).*yourself/, host);
+		assert.equal(await read(path.join(dir, "references", "notes.md")), "mine");
+		await fs.rm(path.join(dir, "references"), { recursive: true });
+		await fs.rm(path.join(dir, "helper.sh"));
+		assert.match(await remove(hosted, name), /^Deleted skill/);
+		await assert.rejects(fs.access(dir));
+	}
+});
+
+test("delete names at most five of the files it found and counts the rest", async (t) => {
+	const { context } = await library(t);
+	const codex = { ...context, host: "codex" };
+	await create(codex, "crowded");
+	for (const file of "abcdefg") await fs.writeFile(path.join(context.skillsDir, "crowded", `${file}.txt`), "mine");
+	await assert.rejects(remove(codex, "crowded"), /\("a\.txt", "b\.txt", "c\.txt", "d\.txt", "e\.txt", and 2 more\)/);
+});
+
+test("delete leaves a SKILL.md that is a symbolic link, has other hard links or is not a file, as update does", async (t) => {
+	const { root, context } = await library(t);
+	const codex = { ...context, host: "codex" };
+	const outside = path.join(root, "outside.md");
+	await fs.writeFile(outside, "outside");
+	const skillFile = (name) => path.join(context.skillsDir, name, "SKILL.md");
+	const replaced = async (name, make) => {
+		await create(codex, name);
+		await fs.rm(skillFile(name));
+		await make(skillFile(name));
+	};
+	await replaced("symlinked", (file) => fs.symlink(outside, file));
+	await replaced("hardlinked", (file) => fs.link(outside, file));
+	await replaced("foldered", (file) => fs.mkdir(file));
+	await assert.rejects(remove(codex, "symlinked"), /symbolic link, so this tool will not delete it/);
+	await assert.rejects(remove(codex, "hardlinked"), /other hard links, so this tool will not delete it/);
+	await assert.rejects(remove(codex, "foldered"), /not a regular file, so this tool will not delete it/);
+	assert.ok((await fs.lstat(skillFile("symlinked"))).isSymbolicLink());
+	assert.equal(await read(outside), "outside");
+	for (const name of ["symlinked", "hardlinked", "foldered"]) await fs.access(path.join(context.skillsDir, name, MARKER_FILE));
+});
+
+test("delete removes a managed skill whose SKILL.md went missing", async (t) => {
+	const { context } = await library(t);
+	for (const host of ["claude", "codex"]) {
+		const hosted = { ...context, host };
+		await create(hosted, `${host}-gone`);
+		await fs.rm(path.join(context.skillsDir, `${host}-gone`, "SKILL.md"));
+		assert.match(await remove(hosted, `${host}-gone`), /^Deleted skill/);
+		await assert.rejects(fs.access(path.join(context.skillsDir, `${host}-gone`)));
+	}
+});
+
 test("a symlinked library root is followed when it points to a directory", async (t) => {
 	const { root, context } = await library(t);
 	await fs.mkdir(path.join(root, "real-skills"));
@@ -450,4 +600,14 @@ test("learnedSkills skips a marked folder without a SKILL.md, and finds nothing 
 	await create(context, "gone-skill");
 	await fs.rm(path.join(context.skillsDir, "gone-skill", "SKILL.md"));
 	assert.deepEqual(await learnedSkills(context.skillsDir), []);
+});
+
+test("learnedSkills leaves out a skill whose SKILL.md cannot be read instead of failing for every skill", async (t) => {
+	const { context } = await library(t);
+	await create(context, "good-skill");
+	await create(context, "broken-skill");
+	// A folder where the file belongs: opening it works, reading it fails with EISDIR, and the check holds as root.
+	await fs.rm(path.join(context.skillsDir, "broken-skill", "SKILL.md"));
+	await fs.mkdir(path.join(context.skillsDir, "broken-skill", "SKILL.md"));
+	assert.deepEqual((await learnedSkills(context.skillsDir)).map(({ name }) => name), ["good-skill"]);
 });

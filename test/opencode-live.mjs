@@ -5,11 +5,12 @@ import { once } from "node:events";
 import { watch } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
-const root = await fs.mkdtemp("/tmp/opencode/auto-learn-live-");
+const root = await fs.mkdtemp(path.join(os.tmpdir(), "auto-learn-live-"));
 const project = path.join(root, "project");
 const config = path.join(root, "config", "opencode");
 const library = path.join(config, "skills");

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.3 - 2026-11-26
+
+- All hosts: `manage_skill` also refuses shell-execution syntax that an argument placeholder leads into (`` $ARGUMENTS!`cmd` ``, a fence line ```` ```$1! ````), because Claude Code fills the placeholders in first, and a body that `@`-mentions a file outside the project (an absolute, `~`, quoted or `..` path), which Claude Code attaches when the skill loads. The `@` check rests on a reading of Claude Code's code, not on a live run; plain relative `@path` mentions and `@` inside words stay allowed.
+- All hosts: the credential check covers the description as well as the body, so a double-quoted secret in a description is no longer hidden by the file's JSON escaping. It also refuses a URL password that only contains `$` or braces (`app:Xy7$A1b2c3@db`), a URL whose user holds an `@`, lowercase `bearer` tokens that hold a digit, Slack `xapp-` tokens, and `oauth_token_secret` written with spaces, a colon or quotes. A URL password with text before its placeholder, such as `user:ghp_${TOKEN}@host`, is now refused too; only a password that starts with `$`, `{` or `<` counts as a placeholder.
+- All hosts: `delete` leaves a skill folder alone when it holds files besides `SKILL.md` and the marker, and when its `SKILL.md` is a symbolic link, is not a regular file or has other hard links, as `update` already did. A managed folder whose `SKILL.md` is missing can still be deleted.
+- All hosts: three hyphens in a row in a description are cut to two, since Claude Code ends a skill's frontmatter at the first `---`.
+- All hosts: a learned skill whose `SKILL.md` cannot be read is left out of the guidance list instead of failing the whole listing.
+- OpenCode: an approval prompt that nobody answers no longer holds up the other skill saves, or the plugin's unload, queued behind it. The prompt now waits outside the queue of writes, and a save approved after the plugin unloaded changes nothing.
+- OpenCode: a turn's tool calls from before an automatic compaction now count toward `minToolCalls`. OpenCode's session context starts at the compaction, so a turn of 30 calls, a compaction and 2 more calls was skipped as having too few tool calls and never reviewed. The plugin now also counts the turn's `session.tool.success` and `session.tool.failed` events, a Code Mode call as the calls its script made, and uses the larger number.
+- OpenCode: a turn that auto-compacted is reviewed even when a synthetic wake-up, not a prompt, started it, because the compaction hides what started the turn. The README says so, and that a review logged as `aborted` or `timeout` may still have saved its skill.
+- Node 24 splits a line at U+2028 and U+2029, which JSON leaves unescaped inside a string. The MCP server and the Codex review reader read their input without that split, so a skill save whose text holds one of them is no longer lost with its call left unanswered. A last request without a trailing newline is still answered.
+- Claude Code: a `settings.json` that exists but cannot be read, for example a directory or a file without read permission, no longer stops the SessionStart hook from adding the guidance.
+- `test/opencode-live.mjs` makes its temporary folder under the system temp folder, instead of `/tmp/opencode`, which it crashed without.
+
 ## 0.5.2 - 2026-11-26
 
 - OpenCode: with `OPENCODE_CONFIG_DIR` set, skills now go to `$OPENCODE_CONFIG_DIR/skills`. OpenCode then reads that folder in place of `~/.config/opencode/skills`, so the skills auto-learn saved there were not offered. Skills an earlier version saved there stay where they are; move their folders to `$OPENCODE_CONFIG_DIR/skills` to use them.

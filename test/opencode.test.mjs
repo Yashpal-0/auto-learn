@@ -258,3 +258,50 @@ test("cancelled native requests still count toward the provider concurrency limi
 	assert.equal(host.generations, 4);
 	response.resolve({ text: "null" });
 });
+
+test("an unanswered approval prompt does not hold up other saves or the plugin's unload", { timeout: 1000 }, async (t) => {
+	const host = await nativeHost(t);
+	host.ctx.options = { autoCapture: false };
+	const cleanup = await setupOpenCode(host.ctx, { env: host.env });
+	const tool = host.tools.get("manage_skill");
+	const approval = deferred();
+	const assertPermission = host.ctx.permission.assert;
+	host.ctx.permission.assert = (input) => input.resources[0] === "left-waiting" ? approval.promise : assertPermission(input);
+	const waiting = tool.execute({ ...proposal, name: "left-waiting" }, call);
+	waiting.catch(() => {});
+	assert.match((await tool.execute({ ...proposal, name: "other-skill" }, call)).content, /Created skill "other-skill"/);
+	await cleanup();
+	approval.resolve();
+	await assert.rejects(waiting, /unloaded/);
+	await assert.rejects(fs.access(path.join(host.library, "left-waiting")));
+});
+
+test("native reviews add the tool results seen before an auto-compaction to the ones the session context still shows", { timeout: 1000 }, async (t) => {
+	for (const results of [4, 5]) {
+		const host = await setup(t);
+		host.messages = completedTurn(2, "build", "late");
+		host.messages[0] = { id: "msg_compact_0", type: "compaction", status: "completed", reason: "auto", summary: "Earlier steps", time: { created: 1 } };
+		const event = (type, sessionID = "ses_native") => ({ ...successEvent(host.project), type, data: { sessionID } });
+		await host.send(event("session.execution.started"));
+		for (let n = 0; n < results; n++) await host.send(event(n % 2 ? "session.tool.failed" : "session.tool.success"));
+		await host.send(event("session.tool.success", "ses_other"));
+		await host.send(successEvent(host.project, "late"));
+		await host.finished.promise;
+		assert.equal(host.generations, results === 5 ? 1 : 0, `${results} results`);
+		if (results === 4) assert.match(await fs.readFile(logFile(host), "utf8"), /fewer than 5 tool calls.*"toolCalls":4/);
+	}
+});
+
+test("a Code Mode call from before an auto-compaction counts the calls its script made, as the session context would", { timeout: 1000 }, async (t) => {
+	const host = await setup(t);
+	host.messages = completedTurn(2, "build", "late");
+	host.messages[0] = { id: "msg_compact_0", type: "compaction", status: "completed", reason: "auto", summary: "Earlier steps", time: { created: 1 } };
+	const event = (type, metadata) => ({ ...successEvent(host.project), type, data: { sessionID: "ses_native", ...(metadata ? { metadata } : {}) } });
+	await host.send(event("session.execution.started"));
+	// Four inner calls, then one that lists none, so it counts once: five calls from two events.
+	await host.send(event("session.tool.success", { toolCalls: [{ tool: "read" }, { tool: "read" }, { tool: "read" }, { tool: "read" }] }));
+	await host.send(event("session.tool.failed", { toolCalls: [] }));
+	await host.send(successEvent(host.project, "late"));
+	await host.finished.promise;
+	assert.equal(host.generations, 1);
+});

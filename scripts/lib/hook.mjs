@@ -110,10 +110,9 @@ async function hiddenSkillNames(env) {
 	let settings;
 	try {
 		settings = JSON.parse(await fs.readFile(claudeUserSettingsFile(env), "utf8"));
-	} catch (error) {
-		// Listing a hidden skill does less harm than losing the guidance over a broken settings file.
-		if (error.code === "ENOENT" || error instanceof SyntaxError) return new Set();
-		throw error;
+	} catch {
+		// Listing a hidden skill does less harm than losing the guidance over a settings file that is missing, unreadable or not JSON.
+		return new Set();
 	}
 	const overrides = settings?.skillOverrides;
 	if (typeof overrides !== "object" || overrides === null) return new Set();

@@ -3,8 +3,8 @@
 // stdout. `mcp-server.mjs` serves Claude Code, `mcp-server.mjs --host=codex`
 // Codex, `mcp-server.mjs --host=copilot` GitHub Copilot and
 // `mcp-server.mjs --host=agy` Antigravity CLI.
-import readline from "node:readline";
 import { agyBuiltinSkillsDirs, parseHost, skillsDir } from "./lib/config.mjs";
+import { lineSplitter, MAX_LINE_BYTES } from "./lib/jsonl.mjs";
 import { createMcpServer } from "./lib/mcp.mjs";
 
 let host;
@@ -27,15 +27,14 @@ function write(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-// One request at a time, so two calls never write the same skill at once.
-for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
-	if (!line.trim()) continue;
+async function serve(line) {
+	if (!line.trim()) return;
 	let message;
 	try {
 		message = JSON.parse(line);
 	} catch {
 		write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
-		continue;
+		return;
 	}
 	try {
 		const reply = await handle(message);
@@ -44,3 +43,14 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
 		write({ jsonrpc: "2.0", id: message?.id ?? null, error: { code: -32603, message: `Internal error: ${error.message}` } });
 	}
 }
+
+// One request at a time, so two calls never write the same skill at once.
+// Not readline: it would also split a line at U+2028 and U+2029, which JSON leaves unescaped inside a string.
+let queue = Promise.resolve();
+const split = lineSplitter(MAX_LINE_BYTES, (line) => {
+	const text = line.toString("utf8");
+	queue = queue.then(() => serve(text));
+});
+process.stdin.on("data", split);
+// A last request that ends without a newline is still a request.
+process.stdin.on("end", () => split(Buffer.from("\n")));

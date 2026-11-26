@@ -16,27 +16,31 @@ export async function setupOpenCode(ctx, { env = process.env } = {}) {
 	}
 	const library = skillsDir(env, "opencode");
 	let writes = Promise.resolve();
-	const saveSkill = (args, call, signal) => {
+	let closed = false;
+	const saveSkill = async (args, call, signal) => {
+		signal?.throwIfAborted();
+		const action = args?.action;
+		if (action !== "create" && action !== "update" && action !== "delete") {
+			throw new Error('action must be "create", "update" or "delete".');
+		}
+		const name = parseName(args?.name);
+		const session = await ctx.session.get({ sessionID: call.sessionID });
+		if (path.resolve(session.location.directory) !== path.resolve(ctx.location.directory) ||
+			(session.location.workspaceID ?? null) !== (ctx.location.workspaceID ?? null)) {
+			throw new Error("The session moved to another OpenCode location; retry the skill change there.");
+		}
+		// A person may leave this prompt unanswered for good, so it waits outside the queue of writes.
+		await ctx.permission.assert({
+			sessionID: call.sessionID,
+			agent: call.agent ?? session.agent,
+			action: TOOL_NAME,
+			resources: [name],
+			save: ["*"],
+			...(call.id ? { source: { type: "tool", messageID: call.messageID, id: call.id } } : {}),
+		});
 		const write = writes.then(async () => {
 			signal?.throwIfAborted();
-			const action = args?.action;
-			if (action !== "create" && action !== "update" && action !== "delete") {
-				throw new Error('action must be "create", "update" or "delete".');
-			}
-			const name = parseName(args?.name);
-			const session = await ctx.session.get({ sessionID: call.sessionID });
-			if (path.resolve(session.location.directory) !== path.resolve(ctx.location.directory) ||
-				(session.location.workspaceID ?? null) !== (ctx.location.workspaceID ?? null)) {
-				throw new Error("The session moved to another OpenCode location; retry the skill change there.");
-			}
-			await ctx.permission.assert({
-				sessionID: call.sessionID,
-				agent: call.agent ?? session.agent,
-				action: TOOL_NAME,
-				resources: [name],
-				save: ["*"],
-				...(call.id ? { source: { type: "tool", messageID: call.messageID, id: call.id } } : {}),
-			});
+			if (closed) throw new Error("auto-learn was unloaded, so the skill was not changed.");
 			if (action === "create" && (await ctx.skill.list()).data.some((skill) => skill.id === name)) {
 				throw new Error(`A skill named "${name}" already exists in OpenCode. Update it if this plugin owns it, or pick another name.`);
 			}
@@ -88,6 +92,7 @@ export async function setupOpenCode(ctx, { env = process.env } = {}) {
 
 	const stopCapture = options.autoCapture ? await setupCapture(ctx, { env, options, saveSkill, permissionAction: TOOL_NAME }) : async () => {};
 	return async () => {
+		closed = true;
 		await stopCapture();
 		await writes;
 	};

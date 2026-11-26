@@ -23,6 +23,11 @@ export const MAX_DESCRIPTION_CHARS = 1024;
 const MAX_NAME_CHARS = 64;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CLAUDE_RESERVED_NAMES = new Set(["synced", "anthropic-skills"]);
+/** The placeholders Claude Code fills in when it loads a skill; with no arguments given they become nothing. */
+const ARGUMENT_PLACEHOLDER = /\$ARGUMENTS(?:\[\d+\])?|\$\d+/g;
+// Rests on a static reading of Claude Code 2.1.332, not a live run.
+// shortcut: a plain relative @path still attaches its file; refuse every @ mention if a skill must never pull project files in.
+const OUTSIDE_MENTION = /(?<=^|\s)@(?:["'\/~]|[A-Za-z]:[\\/]|(?:\S*[\/\\])?\.\.(?=[\/\\]|\s|$))/m;
 const MISSING = new Set(["ENOENT", "ENOTDIR"]);
 const runFile = promisify(execFile);
 
@@ -40,7 +45,7 @@ const SECRET_PATTERNS = [
 	["an API key", /\bsk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}/],
 	["a GitHub token", /\b(?:gh[opsur]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/],
 	["a GitLab token", /\bglpat-[A-Za-z0-9_-]{20,}/],
-	["a Slack token", /\bxox[abeprs]-[A-Za-z0-9-]{10,}/],
+	["a Slack token", /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}/],
 	["an AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
 	["a Google API key", /\bAIza[A-Za-z0-9_-]{35}/],
 	["a JSON Web Token", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
@@ -48,15 +53,17 @@ const SECRET_PATTERNS = [
 	["an npm token", /\bnpm_[A-Za-z0-9]{36}\b/],
 	["a Hugging Face token", /\bhf_[A-Za-z0-9]{30,}/],
 	["a PyPI token", /\bpypi-AgE[A-Za-z0-9_-]{30,}/],
-	// The user may be empty, as in Redis URLs; $, < and braces mark a placeholder; the scheme's bound keeps text like a.a.a. linear to scan.
-	["a password in a URL", /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s\/:@<>]*:[^\s\/@<>${}]{3,}@/i],
+	// The user may be empty, as in Redis URLs, or hold an @; a password that starts with $, < or { is a placeholder; the scheme's bound keeps text like a.a.a. linear to scan.
+	["a password in a URL", /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s\/:<>]*:(?![$<{])[^\s\/@<>]{3,}@/i],
 	["a bearer token", /\bBearer\s+[A-Za-z0-9._~+\/-]{20,}/],
+	// Lowercase bearer is also prose ("bearer token-based-auth"), so this rule needs a digit, as the sk- rule does.
+	["a bearer token", /\bbearer\s+(?=[A-Za-z0-9._~+\/-]*\d)[A-Za-z0-9._~+\/-]{20,}/i],
 	["an AWS secret access key", /aws_secret_access_key["']?\s*[=:]\s*["']?[A-Za-z0-9\/+]{40}/i],
 	["a Google OAuth client secret", /\bGOCSPX-[A-Za-z0-9_-]{20,}/],
 	["a Google OAuth access token", /\bya29\.[A-Za-z0-9_-]{20,}/],
 	["an age secret key", /AGE-SECRET-KEY-1[A-Z0-9]{50,}/],
 	["a Slack webhook URL", /hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}/],
-	["an OAuth token secret", /oauth_token_secret=[A-Za-z0-9]{20,}/],
+	["an OAuth token secret", /oauth_token_secret["']?\s*[=:]\s*["']?[A-Za-z0-9]{20,}/],
 	["an OAuth token secret", /access_secret["']?\s*[=:]\s*["']?[A-Za-z0-9]{40,}/],
 	// A PLAINTEXT signature is the consumer secret, &, then the token secret; Launchpad's consumer secret is empty.
 	["an OAuth token secret", /oauth_signature="?(?:&|%26)[A-Za-z0-9]{40,}/],
@@ -177,11 +184,18 @@ function renderSkill(name, action, rawDescription, rawBody) {
 	if (/^---[ \t]*\r?\n/.test(body)) {
 		throw new Error("body must not start with a frontmatter block (---): the tool writes it from name and description.");
 	}
-	// Claude Code fills in arguments before it runs these, so an unclosed !` or ```!, or a ! before $ARGUMENTS, could still become a command.
-	if (/(?<=^|\s)!(?=`|\$)/m.test(body) || body.includes("```!")) {
+	// Claude Code fills in arguments before it runs these, so an unclosed !` or ```!, or a ! beside $ARGUMENTS, could still become a command.
+	const filled = [body, body.replace(ARGUMENT_PLACEHOLDER, "")];
+	if (filled.some((text) => /(?<=^|\s)!(?=`|\$)/m.test(text) || text.includes("```!"))) {
 		throw new Error(
-			"body must not contain !`command`, ```! blocks or !$ARGUMENTS: Claude Code runs them as shell commands when the skill loads. " +
+			"body must not contain !`command`, ```! blocks or a ! next to an argument placeholder such as $ARGUMENTS: Claude Code runs them as shell commands when the skill loads, after it fills in the arguments, so a placeholder before the ! counts too. " +
 				"Show commands in an ordinary ```sh block, without the leading !.",
+		);
+	}
+	if (filled.some((text) => OUTSIDE_MENTION.test(text))) {
+		throw new Error(
+			"body must not @-mention a file outside the project (an absolute, ~, quoted or .. path): Claude Code attaches that file to the conversation when the skill loads. " +
+				"Write the path without the leading @.",
 		);
 	}
 	const content = `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
@@ -189,8 +203,10 @@ function renderSkill(name, action, rawDescription, rawBody) {
 	if (bytes > MAX_SKILL_BYTES) {
 		throw new Error(`The skill would be ${bytes} bytes, over the ${MAX_SKILL_BYTES} byte limit. Shorten the body.`);
 	}
+	// The cleaned strings, not the file: its JSON-escaped description hides a double-quoted secret from the patterns.
+	const scanned = `${name}\n${description}\n${body}`;
 	for (const [label, pattern] of SECRET_PATTERNS) {
-		if (pattern.test(content)) throw new Error(`The skill seems to contain ${label}. Remove it: skills must never hold secrets.`);
+		if (pattern.test(scanned)) throw new Error(`The skill seems to contain ${label}. Remove it: skills must never hold secrets.`);
 	}
 	return content;
 }
@@ -198,13 +214,15 @@ function renderSkill(name, action, rawDescription, rawBody) {
 /**
  * Makes a description safe to list in a prompt: one line, without control or
  * format characters, and without the angle brackets, backticks and tildes that
- * could open a tag or a code fence.
+ * could open a tag or a code fence, or three hyphens in a row, which Claude
+ * Code takes for the end of the frontmatter wherever they stand.
  */
 export function cleanDescription(value) {
 	return String(value ?? "")
 		.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
 		.replace(/[<>`]/g, "")
 		.replace(/~+/g, "~")
+		.replace(/-{3,}/g, "--")
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -267,14 +285,18 @@ async function declaredSkill(name, folders) {
 	return undefined;
 }
 
+/** Refuses a SKILL.md that is a link or not a plain file: the user may have tied it to another place, and `verb` (what this tool would do) would silently cut that tie. */
+async function checkSkillFile(name, file, verb) {
+	const stats = await lstatIfPresent(file);
+	if (stats?.isSymbolicLink()) throw new Error(`The SKILL.md of "${name}" is a symbolic link, so this tool will not ${verb} it.`);
+	if (stats && !stats.isFile()) throw new Error(`The SKILL.md of "${name}" is not a regular file, so this tool will not ${verb} it.`);
+	if (stats && stats.nlink > 1) throw new Error(`The SKILL.md of "${name}" has other hard links, so this tool will not ${verb} it.`);
+}
+
 async function updateSkill(name, content, context, revision) {
 	const dir = await managedSkillDir(name, context, "update");
 	const file = path.join(dir, "SKILL.md");
-	const stats = await lstatIfPresent(file);
-	// A link means the user tied this file to another place; replacing it would silently cut that tie.
-	if (stats?.isSymbolicLink()) throw new Error(`The SKILL.md of "${name}" is a symbolic link, so this tool will not replace it.`);
-	if (stats && !stats.isFile()) throw new Error(`The SKILL.md of "${name}" is not a regular file, so this tool will not replace it.`);
-	if (stats && stats.nlink > 1) throw new Error(`The SKILL.md of "${name}" has other hard links, so this tool will not replace it.`);
+	await checkSkillFile(name, file, "replace");
 	await checkRevision(name, file, revision, context);
 	await writeFileAtomic(file, content);
 	return `${savedMessageStart("update", name)} at ${displayPath(file)}.`;
@@ -282,7 +304,15 @@ async function updateSkill(name, content, context, revision) {
 
 async function deleteSkill(name, context, revision) {
 	const dir = await managedSkillDir(name, context, "delete");
-	await checkRevision(name, path.join(dir, "SKILL.md"), revision, context);
+	const file = path.join(dir, "SKILL.md");
+	await checkSkillFile(name, file, "delete");
+	await checkRevision(name, file, revision, context);
+	// The folder is the user's too once they add a file to it; the recursive rm below would destroy that file.
+	const extra = (await fs.readdir(dir)).filter((entry) => entry !== "SKILL.md" && entry !== MARKER_FILE).sort();
+	if (extra.length > 0) {
+		const listed = extra.slice(0, 5).map((entry) => JSON.stringify(entry)).join(", ") + (extra.length > 5 ? `, and ${extra.length - 5} more` : "");
+		throw new Error(`The skill "${name}" holds files this tool did not write (${listed}), so it will not delete the folder. Delete ${displayPath(dir)} yourself if you want it gone.`);
+	}
 	await fs.rm(dir, { recursive: true });
 	return `${savedMessageStart("delete", name)}.`;
 }
@@ -419,9 +449,13 @@ export async function learnedSkills(skillsDir) {
 	const skills = [];
 	for (const name of await skillDirNames(skillsDir)) {
 		const dir = path.join(skillsDir, name);
-		if (!(await isManagedSkillDir(dir))) continue;
-		const skill = await readSkillHead(path.join(dir, "SKILL.md"));
-		if (skill) skills.push({ name, description: frontmatterDescription(skill.head), changedMs: skill.changedMs });
+		try {
+			if (!(await isManagedSkillDir(dir))) continue;
+			const skill = await readSkillHead(path.join(dir, "SKILL.md"));
+			if (skill) skills.push({ name, description: frontmatterDescription(skill.head), changedMs: skill.changedMs });
+		} catch {
+			// shortcut: a skill that cannot be read (permissions, a folder where SKILL.md should be) is left out of the list unreported; log it if users need to know why.
+		}
 	}
 	return skills.sort((a, b) => b.changedMs - a.changedMs).map(({ name, description }) => ({ name, description }));
 }

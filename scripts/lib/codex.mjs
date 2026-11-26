@@ -4,10 +4,10 @@
 // manage_skill's is denied, and Codex never saves it.
 import { spawn } from "node:child_process";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { boundedSink, forkEnvironment, isDirectory, noteToolName, requestedSave, skillChanges } from "./capture.mjs";
 import { PLUGIN_VERSION } from "./config.mjs";
+import { lineSplitter, MAX_LINE_BYTES, parseLine } from "./jsonl.mjs";
 import { captureNudge } from "./prompts.mjs";
 import { findTurnEnd } from "./rollout.mjs";
 import { isValidSessionId } from "./state.mjs";
@@ -255,14 +255,10 @@ export function runCodexFork({ threadId, turnId, model, effort, modelProvider, c
 			}
 		};
 
-		readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => {
-			let message;
-			try {
-				message = JSON.parse(line);
-			} catch {
-				// Not a protocol message, so nothing to act on.
-				return;
-			}
+		// Not readline: it would also split a line at U+2028 and U+2029, which JSON leaves unescaped inside a string.
+		child.stdout.on("data", lineSplitter(MAX_LINE_BYTES, (line) => {
+			// A line that is not JSON is not a protocol message, so there is nothing to act on.
+			const message = parseLine(line);
 			if (message === null || typeof message !== "object") return;
 			if (typeof message.method === "string" && message.id !== undefined) {
 				// A request the fork should never need, such as an approval: the policy denies them all.
@@ -272,7 +268,7 @@ export function runCodexFork({ threadId, turnId, model, effort, modelProvider, c
 			} else {
 				onResponse(message);
 			}
-		});
+		}));
 
 		request("initialize", { clientInfo: { name: "auto-learn", title: "auto-learn", version: PLUGIN_VERSION } }, () => {
 			send({ method: "initialized" });

@@ -269,3 +269,24 @@ test("the server script speaks JSON-RPC over stdio and exits when stdin closes",
 	child.stdin.end();
 	assert.equal(await exited, 0);
 });
+
+test("the server script keeps a request whole when its text holds U+2028 or U+2029, and answers a last request without a newline", async (t) => {
+	const root = await tempDir(t);
+	const child = spawn(process.execPath, [SERVER_SCRIPT], {
+		env: { ...process.env, AUTO_LEARN_SKILLS_DIR: path.join(root, "skills"), CLAUDE_PROJECT_DIR: path.join(root, "project") },
+		stdio: ["pipe", "pipe", "inherit"],
+	});
+	t.after(() => child.kill());
+	const replies = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+	const next = async () => JSON.parse((await replies.next()).value);
+	const exited = new Promise((resolve) => child.once("exit", resolve));
+
+	const body = "1. Build.\u20282. Upload.\u2029Done.";
+	child.stdin.write(`${JSON.stringify(call(1, { ...createArgs, body }))}\n`);
+	assert.match((await next()).result.content[0].text, /^Created skill/);
+	assert.match(await fs.readFile(path.join(root, "skills", "deploy-docs", "SKILL.md"), "utf8"), /Build\.\u20282\. Upload\.\u2029Done\./);
+
+	child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }));
+	assert.deepEqual(await next(), { jsonrpc: "2.0", id: 2, result: {} });
+	assert.equal(await exited, 0);
+});

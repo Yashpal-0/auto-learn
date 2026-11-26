@@ -49,24 +49,35 @@ export async function setupCapture(ctx, { env, options, saveSkill, permissionAct
 		}
 	});
 
+	// The session context starts at the last compaction, so the turn's tool calls from before one are counted here, from their events.
+	const eventCalls = new Map();
 	const handle = async (event) => {
 		const sessionID = event.data.sessionID;
 		const key = `reviewed/${sessionID}`;
+		if (event.type === "session.tool.success" || event.type === "session.tool.failed") {
+			if (eventCalls.has(sessionID)) eventCalls.set(sessionID, eventCalls.get(sessionID) + callsIn(event.data.metadata));
+			return;
+		}
+		if (event.type === "session.execution.started" && (!event.location || owns(event.location))) eventCalls.set(sessionID, 0);
 		if (event.type !== "session.execution.succeeded") {
 			const job = active.get(sessionID);
 			job?.controller.abort(event.type);
 			if (event.type === "session.deleted") {
+				eventCalls.delete(sessionID);
 				await job?.work;
 				await ctx.storage.remove(key);
 			}
 			return;
 		}
+		const fromEvents = eventCalls.get(sessionID) ?? 0;
+		eventCalls.delete(sessionID);
 		if (event.location && !owns(event.location)) return;
 		if (active.has(sessionID)) return log({ event: "skip", session: sessionID, reason: "a review is already running" });
 		if (await ctx.storage.get(key) === event.id) return;
 		const session = await ctx.session.get({ sessionID });
 		if (!owns(session.location)) return;
 		const turn = selectTurn(await ctx.session.context({ sessionID }), event.id);
+		if (turn.toolCalls !== undefined) turn.toolCalls = Math.max(turn.toolCalls, fromEvents);
 		const reason = session.parentID ? "subagent session" : session.agent === "plan" ? "plan mode" : turn.skip ||
 			(turn.toolCalls < options.minToolCalls ? `fewer than ${options.minToolCalls} tool calls` : undefined) ||
 			(active.size >= MAX_ACTIVE_REVIEWS || requests.size >= MAX_ACTIVE_REVIEWS ? "review concurrency limit reached" : undefined);
@@ -87,7 +98,7 @@ export async function setupCapture(ctx, { env, options, saveSkill, permissionAct
 	};
 	const events = (async () => {
 		for await (const event of ctx.event.subscribe({
-			types: ["session.execution.succeeded", "session.execution.started", "session.deleted", "session.moved"],
+			types: ["session.execution.succeeded", "session.execution.started", "session.deleted", "session.moved", "session.tool.success", "session.tool.failed"],
 			signal: controller.signal,
 		})) {
 			try {
@@ -108,6 +119,11 @@ export async function setupCapture(ctx, { env, options, saveSkill, permissionAct
 	};
 }
 
+/** A tool call counts once; a Code Mode call counts the calls its script made, which its result and its event both list in `metadata.toolCalls`. */
+function callsIn(metadata) {
+	return Math.max(1, Array.isArray(metadata?.toolCalls) ? metadata.toolCalls.length : 0);
+}
+
 export function selectTurn(messages, eventID) {
 	const end = messages.at(-1);
 	if (end?.type !== "idle" || end.id !== eventID.replace(/^evt_/, "msg_")) return { skip: "the session has moved on" };
@@ -120,7 +136,7 @@ export function selectTurn(messages, eventID) {
 	if (!compacted && !turn.some((message) => message.type === "user")) return { skip: "no user prompt in the turn" };
 	if (replies.some((message) => message.agent === "plan")) return { skip: "plan mode" };
 	const toolCalls = replies.reduce((count, message) => count + message.content.reduce((sum, part) =>
-		part.type !== "tool" ? sum : sum + Math.max(1, Array.isArray(part.state?.metadata?.toolCalls) ? part.state.metadata.toolCalls.length : 0), 0), 0);
+		part.type !== "tool" ? sum : sum + callsIn(part.state?.metadata), 0), 0);
 	return { turnID: end.id, toolCalls };
 }
 
