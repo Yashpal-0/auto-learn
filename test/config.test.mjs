@@ -39,6 +39,12 @@ test("OpenCode's skill library follows XDG_CONFIG_HOME and stays separate from C
 	assert.equal(skillsDir({ AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "opencode"), path.resolve("/elsewhere"));
 });
 
+test("OpenCode's skill library is in OPENCODE_CONFIG_DIR when set, the global folder OpenCode then reads", () => {
+	assert.equal(skillsDir({ OPENCODE_CONFIG_DIR: "/oc", XDG_CONFIG_HOME: "/cfg" }, "opencode"), path.resolve("/oc/skills"));
+	assert.equal(skillsDir({ OPENCODE_CONFIG_DIR: "", XDG_CONFIG_HOME: "/cfg" }, "opencode"), path.resolve("/cfg/opencode/skills"));
+	assert.equal(skillsDir({ OPENCODE_CONFIG_DIR: "/oc", AUTO_LEARN_SKILLS_DIR: "/elsewhere" }, "opencode"), path.resolve("/elsewhere"));
+});
+
 test("GitHub Copilot's skill library is skills in COPILOT_HOME, ~/.copilot by default, unless AUTO_LEARN_SKILLS_DIR names one", () => {
 	assert.equal(skillsDir({ CLAUDE_CONFIG_DIR: "/cfg" }, "copilot"), path.join(os.homedir(), ".copilot", "skills"));
 	assert.equal(skillsDir({ COPILOT_HOME: "/copilot" }, "copilot"), path.resolve("/copilot/skills"));

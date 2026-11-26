@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 - 2026-11-26
+
+- OpenCode: with `OPENCODE_CONFIG_DIR` set, skills now go to `$OPENCODE_CONFIG_DIR/skills`. OpenCode then reads that folder in place of `~/.config/opencode/skills`, so the skills auto-learn saved there were not offered. Skills an earlier version saved there stay where they are; move their folders to `$OPENCODE_CONFIG_DIR/skills` to use them.
+- Claude Code, Codex, GitHub Copilot and Antigravity CLI behave as before.
+
 ## 0.5.1 - 2026-11-23
 
 - OpenCode: Code Mode `execute` parts now count their nested `state.metadata.toolCalls` toward `minToolCalls`, falling back to `1` when a script invoked no inner tools.

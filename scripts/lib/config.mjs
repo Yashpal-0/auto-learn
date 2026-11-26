@@ -77,11 +77,12 @@ export function agyBuiltinSkillsDirs() {
 /**
  * The personal skills directory the agent discovers, which holds the managed
  * skills: ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills,
- * ~/.gemini/config/skills, or $XDG_CONFIG_HOME/opencode/skills.
+ * ~/.gemini/config/skills, or $XDG_CONFIG_HOME/opencode/skills
+ * ($OPENCODE_CONFIG_DIR/skills when that is set).
  */
 export function skillsDir(env = process.env, host = "claude") {
 	if (env.AUTO_LEARN_SKILLS_DIR) return path.resolve(env.AUTO_LEARN_SKILLS_DIR);
-	if (host === "opencode") return path.resolve(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode", "skills");
+	if (host === "opencode") return path.resolve(env.OPENCODE_CONFIG_DIR || path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode"), "skills");
 	if (host === "copilot") return path.join(copilotHome(env), "skills");
 	if (host === "agy") return path.join(agyConfigDir(), "skills");
 	return path.resolve(host === "codex" ? path.join(os.homedir(), ".agents", "skills") : path.join(claudeConfigDir(env), "skills"));

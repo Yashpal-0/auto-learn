@@ -513,7 +513,7 @@ The OpenCode Promise plugin API currently does not propagate request cancellatio
 
 ### Skills and permissions in OpenCode
 
-Skills go to `~/.config/opencode/skills/<name>/SKILL.md`, or `$XDG_CONFIG_HOME/opencode/skills` when set. `AUTO_LEARN_SKILLS_DIR` overrides that location for testing; OpenCode must discover an override before it can offer those skills. As in the other hosts, the `.auto-learn` marker identifies skills the plugin may change.
+Skills go to `~/.config/opencode/skills/<name>/SKILL.md`, or `$XDG_CONFIG_HOME/opencode/skills` when set. When `OPENCODE_CONFIG_DIR` is set, they go to `$OPENCODE_CONFIG_DIR/skills`, the global skill folder OpenCode then reads. `AUTO_LEARN_SKILLS_DIR` overrides that location for testing; OpenCode must discover an override before it can offer those skills. As in the other hosts, the `.auto-learn` marker identifies skills the plugin may change.
 
 An update replaces the skill's full description and instructions. The review is told to update only when its current text is visible and to preserve useful steps, but model-written edits can still lose details. Remove the `.auto-learn` marker to keep a skill under your control.
 

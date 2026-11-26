@@ -1,6 +1,6 @@
 {
   "name": "auto-learn",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Save reusable procedures from your work as personal skills in OpenCode.",
   "type": "module",
   "exports": {
