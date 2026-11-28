@@ -268,7 +268,13 @@ async function agyStop(dir, sessionId, input, env, spawnWorker, isAttended) {
 	if (turn === undefined) return skip("the transcript has no turn");
 	const { offset, promptId, toolCalls, end } = turn;
 	if (saved?.queued === true && saved.promptId === promptId) return skip("already queued", toolCalls);
-	const reason = /^\/plan(\s|$)/.test(lastUserInput) ? "plan mode" : toolCalls < options.minToolCalls ? `fewer than ${options.minToolCalls} tool calls` : undefined;
+	const reason =
+		input.terminationReason === "USER_CANCELED" ? "canceled" :
+		input.terminationReason === "ERROR" ? "error" :
+		/^\/plan(\s|$)/.test(lastUserInput) ? "plan mode" :
+		/^\/goal(\s|$)/.test(lastUserInput) ? "goal mode" :
+		toolCalls < options.minToolCalls ? `fewer than ${options.minToolCalls} tool calls` :
+		undefined;
 	const queued = reason === undefined;
 	if (queued) await queueCapture(dir, { host: "agy", sessionId, transcriptPath, start: offset, end, toolCalls, projectDir: agyProjectDir(input) });
 	await writeSessionState(dir, sessionId, { offset, promptId, toolCalls, ...(queued ? { queued } : {}) });

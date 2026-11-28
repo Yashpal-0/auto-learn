@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 - 2026-11-28
+
+- Antigravity CLI: `manage_skill` now supports `read`, SHA-256 `revision` checks on `update` and `delete`, and exclusive per-skill locks across MCP processes, matching Claude Code. Background reviews can now read an existing learned skill in full and update or delete it safely instead of skipping skills whose text was absent or clipped in the turn excerpt.
+- Antigravity CLI: the `Stop` hook now skips `/goal` turns (`goal mode`), turns canceled by the user (`USER_CANCELED`, logged as `canceled`) and turns terminated by an error (`ERROR`, logged as `error`).
+- Antigravity CLI: `create` now also checks `~/.agents/skills`, `~/.gemini/antigravity-cli/skills` and `~/.gemini/skills` (by folder name and declared frontmatter `name:`) alongside `<project>/.agents/skills` and built-in skills, so a learned skill does not collide with or get shadowed by skills Antigravity loads from those folders.
+- Antigravity CLI: guidance, tool descriptions and docs now reflect that Antigravity rereads skills before each turn (so a saved skill applies on the next turn in the same session as well as in later conversations), and the learned-skills message instructs the model to read matching skills before proceeding.
+- Claude Code, Codex, GitHub Copilot and OpenCode behave as before.
+
 ## 0.5.4 - 2026-11-26
 
 - OpenCode: the learned-skills list in the session guidance is built once per session and again after each compaction, not on every request. It sits in the cached system prompt, so each saved or updated skill changed it and made every open session re-bill its whole history at uncached rates on the next request. A skill saved mid-session is now listed after that session's next compaction, or in a new session.

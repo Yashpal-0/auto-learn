@@ -175,12 +175,14 @@ test("an agy turn with enough tool calls queues a capture of the turn and starts
 	assert.deepEqual(await s.log(), [{ event: "queued", session: SESSION, toolCalls: 5, terminationReason: "NO_TOOL_CALL" }]);
 });
 
-test("a prompt that mentions /plan after its first word is no plan", async (t) => {
-	const s = await agySession(t);
-	await s.run("session-start");
-	await s.append(agyTurn(0, 5));
-	await s.run("stop", { lastUserInput: "what does /plan do in agy?" });
-	assert.deepEqual(s.workers, [[SESSION, "agy"]]);
+test("a prompt that mentions /plan or /goal after its first word is neither plan nor goal mode", async (t) => {
+	for (const lastUserInput of ["what does /plan do in agy?", "what does /goal do in agy?", "/goals for this sprint"]) {
+		const s = await agySession(t);
+		await s.run("session-start");
+		await s.append(agyTurn(0, 5));
+		await s.run("stop", { lastUserInput });
+		assert.deepEqual(s.workers, [[SESSION, "agy"]], lastUserInput);
+	}
 });
 
 test("a second stop in a turn that is already queued is skipped, however much the turn has grown, and a new user turn is queued again", async (t) => {
@@ -212,6 +214,10 @@ test("an agy stop that is no turn to review queues nothing, and logs why where a
 		["too few tool calls", {}, { calls: 4 }, [["skip", "fewer than 5 tool calls", 4]], { offset: 0, promptId: "0", toolCalls: 4 }],
 		["plan mode", {}, { input: { lastUserInput: `/plan ${PROMPT}` } }, [["skip", "plan mode", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
 		["plan mode with nothing typed after /plan", {}, { input: { lastUserInput: "/plan" } }, [["skip", "plan mode", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
+		["goal mode", {}, { input: { lastUserInput: `/goal ${PROMPT}` } }, [["skip", "goal mode", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
+		["goal mode with nothing typed after /goal", {}, { input: { lastUserInput: "/goal" } }, [["skip", "goal mode", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
+		["canceled by user", {}, { input: { terminationReason: "USER_CANCELED" } }, [["skip", "canceled", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
+		["ended with error", {}, { input: { terminationReason: "ERROR" } }, [["skip", "error", 5]], { offset: 0, promptId: "0", toolCalls: 5 }],
 		["a subagent's stop, which has no user input", {}, { input: { lastUserInput: "" } }, [], started],
 		["a stop with no user input at all", {}, { input: { lastUserInput: undefined } }, [], started],
 		["a review's own session", { env: { AUTO_LEARN_CAPTURE: "1" } }, {}, [], undefined],

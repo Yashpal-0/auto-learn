@@ -23,6 +23,8 @@ export const MAX_DESCRIPTION_CHARS = 1024;
 const MAX_NAME_CHARS = 64;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CLAUDE_RESERVED_NAMES = new Set(["synced", "anthropic-skills"]);
+/** Hosts whose manage_skill supports revision-checked reads, updates, deletes and per-skill locks. */
+const REVISIONED_HOSTS = new Set(["claude", "agy"]);
 /** The placeholders Claude Code fills in when it loads a skill; with no arguments given they become nothing. */
 const ARGUMENT_PLACEHOLDER = /\$ARGUMENTS(?:\[\d+\])?|\$\d+/g;
 // Rests on a static reading of Claude Code 2.1.332, not a live run.
@@ -74,15 +76,18 @@ const SECRET_PATTERNS = [
  * call throws an Error whose message says what to change.
  *
  * @param {{action?: unknown, name?: unknown, description?: unknown, body?: unknown, revision?: unknown}} args
- * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, builtinSkillsDirs?: string[], host?: "claude" | "codex" | "copilot" | "opencode" | "agy"}} context
- * `agentsSkillsDir` is the personal folder `create` also checks for a taken name, which GitHub Copilot reads next to its own.
+ * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, otherSkillsDirs?: string[], builtinSkillsDirs?: string[], host?: "claude" | "codex" | "copilot" | "opencode" | "agy"}} context
+ * `agentsSkillsDir` is the personal folder `create` also checks for a taken name, which GitHub Copilot and Antigravity CLI read next to their own.
+ * `otherSkillsDirs` are other personal folders the host reads with higher priority, which `create` also checks.
  * `builtinSkillsDirs` are the folders of the skills that ship with the agent, which `create` also checks, since a personal skill of the same name replaces one.
  */
 export async function manageSkill(args, context) {
 	const { action, name: rawName, description, body, revision } = args ?? {};
-	const isClaude = (context.host ?? "claude") === "claude";
-	if (action !== "create" && action !== "update" && action !== "delete" && !(isClaude && action === "read")) {
-		throw new Error(isClaude ? 'action must be "read", "create", "update" or "delete".' : 'action must be "create", "update" or "delete".');
+	const host = context.host ?? "claude";
+	const isClaude = host === "claude";
+	const revisioned = REVISIONED_HOSTS.has(host);
+	if (action !== "create" && action !== "update" && action !== "delete" && !(revisioned && action === "read")) {
+		throw new Error(revisioned ? 'action must be "read", "create", "update" or "delete".' : 'action must be "create", "update" or "delete".');
 	}
 	const name = parseName(rawName);
 	if (isClaude && action === "create" && CLAUDE_RESERVED_NAMES.has(name)) {
@@ -95,10 +100,10 @@ export async function manageSkill(args, context) {
 	const content = action === "delete" ? undefined : renderSkill(name, action, description, body);
 	const change = () => action === "delete" ? deleteSkill(name, context, revision) :
 		action === "create" ? createSkill(name, content, context) : updateSkill(name, content, context, revision);
-	return isClaude ? withSkillLock(name, context, change) : change();
+	return revisioned ? withSkillLock(name, context, change) : change();
 }
 
-async function withSkillLock(name, { skillsDir }, change) {
+async function withSkillLock(name, { skillsDir, host }, change) {
 	await fs.mkdir(skillsDir, { recursive: true });
 	const file = path.join(skillsDir, `.auto-learn.${name}.lock`);
 	let handle;
@@ -106,7 +111,8 @@ async function withSkillLock(name, { skillsDir }, change) {
 		handle = await fs.open(file, "wx", 0o600);
 	} catch (error) {
 		if (error.code !== "EEXIST") throw error;
-		throw new Error(`Another process is changing skill "${name}". Retry after it finishes. If ${displayPath(file)} remains after Claude exits, remove that lock file.`);
+		const agent = host === "agy" ? "Antigravity" : "Claude";
+		throw new Error(`Another process is changing skill "${name}". Retry after it finishes. If ${displayPath(file)} remains after ${agent} exits, remove that lock file.`);
 	}
 	try {
 		await handle.writeFile(`${process.pid}\n`);
@@ -143,7 +149,7 @@ async function readRevision(name, file) {
 }
 
 async function checkRevision(name, file, revision, context) {
-	if ((context.host ?? "claude") !== "claude") return;
+	if (!REVISIONED_HOSTS.has(context.host ?? "claude")) return;
 	if (typeof revision !== "string" || !/^(?:[a-f0-9]{64}|missing)$/.test(revision)) {
 		throw new Error('Use action "read" first and pass its revision when updating or deleting a skill.');
 	}
@@ -231,7 +237,11 @@ async function createSkill(name, content, context) {
 	const projectSkills = await projectSkillsDir(context);
 	// A personal skill would shadow the project's skill of the same name.
 	const host = context.host ?? "claude";
-	const folders = [projectSkills, context.agentsSkillsDir === context.skillsDir ? undefined : context.agentsSkillsDir, ...(context.builtinSkillsDirs ?? [])];
+	const personal = await canonicalPath(context.skillsDir);
+	const folders = [];
+	for (const folder of [projectSkills, context.agentsSkillsDir, ...(context.otherSkillsDirs ?? []), ...(context.builtinSkillsDirs ?? [])]) {
+		if (folder && (await canonicalPath(folder)) !== personal) folders.push(folder);
+	}
 	const conflict = host === "claude" ? await claudeSkillConflict(name, context) :
 		(await existingSkill(name, folders)) ?? (host === "agy" ? await declaredSkill(name, folders) : undefined);
 	if (conflict) {
@@ -404,7 +414,7 @@ async function gitPath(directory, flag) {
 /** The project's skills directory, or undefined when there is none or it is the personal library itself. */
 // shortcut: for Codex, checks the project's own .agents/skills only, while Codex also reads those of the folders up to the repository root; walk them when a learned skill shadows one there.
 // shortcut: for GitHub Copilot, checks the project's .github/skills (of the session's working folder) and ~/.agents/skills, while Copilot also reads the project's .agents/skills and .claude/skills and the .github/skills of the folders up to the repository root; check those too when a learned skill shadows one there.
-// shortcut: for agy, checks the project's own .agents/skills and the builtin skills, while agy also reads the project's .agent, _agents and _agent folders, those of the folders up to the git root, and the skills that workspace and global skills.json and plugins.json files declare; check those too when a learned skill shadows one there.
+// shortcut: for agy, checks the project's own .agents/skills, ~/.agents/skills, ~/.gemini/antigravity-cli/skills, ~/.gemini/skills and the builtin skills, while agy also reads the project's .agent, _agents and _agent folders, those of the folders up to the git root, and the skills that workspace and global skills.json and plugins.json files declare; check those too when a learned skill shadows one there.
 async function projectSkillsDir({ skillsDir, projectDir, host }) {
 	if (!projectDir) return undefined;
 	const folder = { opencode: ".opencode", codex: ".agents", copilot: ".github", agy: ".agents" }[host] ?? ".claude";

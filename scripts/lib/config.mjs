@@ -75,6 +75,15 @@ export function agyBuiltinSkillsDirs() {
 }
 
 /**
+ * Other personal skill folders that Antigravity CLI reads alongside ~/.gemini/config/skills
+ * with higher priority. A managed skill of the same name would be shadowed by them.
+ */
+export function agyExtraSkillsDirs() {
+	const gemini = path.join(os.homedir(), ".gemini");
+	return [path.join(gemini, "antigravity-cli", "skills"), path.join(gemini, "skills")];
+}
+
+/**
  * The personal skills directory the agent discovers, which holds the managed
  * skills: ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills,
  * ~/.gemini/config/skills, or $XDG_CONFIG_HOME/opencode/skills

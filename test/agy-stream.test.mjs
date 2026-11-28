@@ -144,7 +144,12 @@ test("every message the real manage_skill returns for a save is one the analyzer
 		(error) => error.message,
 	);
 	assert.match(refusal, /already exists/);
-	const saves = [[create, created, "create"], [update, await manageSkill(update, context), "update"], [remove, await manageSkill(remove, context), "delete"]];
+	const readRev = async () => JSON.parse(await manageSkill({ action: "read", name: "inotify-watch-limit" }, context)).revision;
+	const updatedArgs = { ...update, revision: await readRev() };
+	const updated = await manageSkill(updatedArgs, context);
+	const removedArgs = { ...remove, revision: await readRev() };
+	const removed = await manageSkill(removedArgs, context);
+	const saves = [[create, created, "create"], [updatedArgs, updated, "update"], [removedArgs, removed, "delete"]];
 	for (const [args, message, action] of saves) {
 		assert.deepEqual(analyze(stream.skill(1, args, { output: message })).summary.saves.map((save) => save.action), [action], message);
 	}

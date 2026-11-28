@@ -11,11 +11,11 @@ const SANDBOX_STATE = "codex/sandbox-state";
 
 /** @param {string} agent The agent that offers saved skills. */
 export function inputSchema(agent) {
-	const isClaude = agent === "Claude Code";
+	const hasRead = agent === "Claude Code" || agent === "Antigravity";
 	return {
 		type: "object",
 		properties: {
-			action: { type: "string", enum: isClaude ? ["read", "create", "update", "delete"] : ["create", "update", "delete"], description: "What to do with the skill." },
+			action: { type: "string", enum: hasRead ? ["read", "create", "update", "delete"] : ["create", "update", "delete"], description: "What to do with the skill." },
 			name: {
 				type: "string",
 				description: 'The skill\'s name: 1-64 lowercase letters and digits, with single hyphens between words, such as "deploy-docs".',
@@ -28,7 +28,7 @@ export function inputSchema(agent) {
 				type: "string",
 				description: "The skill's instructions in Markdown, without frontmatter. Needed for create and update.",
 			},
-			...(isClaude ? {
+			...(hasRead ? {
 				revision: {
 					type: "string",
 					description: 'The revision returned by action "read". Required for update and delete; pass it unchanged. If the skill changed, read again and preserve its current steps.',
@@ -46,7 +46,7 @@ export function inputSchema(agent) {
  * starts the server in the plugin's folder, each call's project is the
  * working directory in the sandbox state the call carries, not `projectDir`.
  *
- * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, builtinSkillsDirs?: string[], host?: "claude" | "codex" | "copilot" | "agy"}} context
+ * @param {{skillsDir: string, projectDir?: string, agentsSkillsDir?: string, otherSkillsDirs?: string[], builtinSkillsDirs?: string[], host?: "claude" | "codex" | "copilot" | "agy"}} context
  */
 export function createMcpServer(context) {
 	const isCodex = context.host === "codex";

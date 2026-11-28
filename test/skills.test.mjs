@@ -174,6 +174,25 @@ test("for Antigravity CLI, create refuses the name a skill declares in its SKILL
 	assert.match(await create(agy, "ship-docs"), /^Created skill/);
 });
 
+test("for Antigravity CLI, read returns revision, update and delete require it, locks name Antigravity, and Claude-only reserved names stay allowed", async (t) => {
+	const { root, context } = await library(t);
+	const otherDir = path.join(root, "extra-skills");
+	await authoredSkill(otherDir, "extra-taken");
+	const agy = { ...context, host: "agy", otherSkillsDirs: [otherDir, context.skillsDir] };
+	await assert.rejects(create(agy, "extra-taken"), /already exists.*another name/);
+	assert.match(await create(agy, "synced"), /^Created skill/);
+	await assert.rejects(manageSkill({ action: "update", name: "synced", description: "d", body: "b" }, agy), /read.*revision/i);
+	const snapshot = JSON.parse(await manageSkill({ action: "read", name: "synced" }, agy));
+	assert.match(snapshot.revision, /^[a-f0-9]{64}$/);
+	assert.match(await manageSkill({ action: "update", name: "synced", description: "Updated", body: "2. Step.", revision: snapshot.revision }, agy), /^Updated skill/);
+	await assert.rejects(manageSkill({ action: "delete", name: "synced", revision: snapshot.revision }, agy), /changed.*read/i);
+	const after = JSON.parse(await manageSkill({ action: "read", name: "synced" }, agy));
+	await fs.writeFile(path.join(context.skillsDir, ".auto-learn.synced.lock"), "999\n");
+	await assert.rejects(manageSkill({ action: "delete", name: "synced", revision: after.revision }, agy), /after Antigravity exits/);
+	await fs.rm(path.join(context.skillsDir, ".auto-learn.synced.lock"));
+	assert.match(await manageSkill({ action: "delete", name: "synced", revision: after.revision }, agy), /^Deleted skill/);
+});
+
 test("for OpenCode, create refuses a name a project skill in .opencode/skills uses", async (t) => {
 	const { context } = await library(t);
 	await authoredSkill(path.join(context.projectDir, ".opencode", "skills"), "deploy-docs");

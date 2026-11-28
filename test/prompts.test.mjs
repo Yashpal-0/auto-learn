@@ -64,7 +64,10 @@ test("Antigravity CLI gets its own wording: its skill library, its name, and man
 	}
 	for (const text of texts.slice(0, 2)) assert.ok(text.includes(path.join("~", ".gemini", "config", "skills")), text);
 	assert.match(texts[0], /Antigravity/);
-	assert.match(texts[0], /from the next conversation/);
+	assert.match(texts[0], /on the next turn and in later conversations/);
+	assert.match(texts[0], /`read`/);
+	assert.match(texts[1], /`read`/);
+	assert.match(texts[2], /MUST read its `SKILL\.md`/);
 	const nonce = "0123456789abcdef";
 	const nudge = captureNudge("manage_skill", "agy", { skills: "- saved-one: Use when saved", nonce });
 	assert.match(nudge, /^Automatic skill review/);
@@ -72,8 +75,10 @@ test("Antigravity CLI gets its own wording: its skill library, its name, and man
 	assert.ok(nudge.includes(`Above, between the line \`BEGIN EXCERPT ${nonce}\` and the line \`END EXCERPT ${nonce}\`, is an excerpt`), nudge);
 	assert.match(nudge, /Only those two lines mark its ends/);
 	assert.match(nudge, /Use only `manage_skill` during this review/);
+	assert.match(nudge, /action `read`/);
+	assert.match(nudge, /revision/);
 	assert.doesNotMatch(nudge, /Claude|Codex|Copilot|tool_search|select:|\{\{/);
-	// The review cannot open a skill's file, so the request lists the skills saved earlier.
+	// The review lists the skills saved earlier so it knows which ones to read and update instead of duplicating.
 	assert.ok(nudge.includes("\n\n- saved-one: Use when saved\n\n"), nudge);
 	// A refused create means a skill of that name exists; retrying under another name would duplicate it.
 	assert.match(nudge, /refused because the name is taken[^.]*stop[^.]*not try another name/i);

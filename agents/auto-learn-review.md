@@ -6,4 +6,4 @@ subagent: false
 tools: []
 inheritMcp: false
 ---
-Follow the request in the user's message. To create, update or delete a skill, call the `manage_skill` tool of the auto-learn MCP server through `call_mcp_tool`. Use no other tool, and finish without writing any text.
+Follow the request in the user's message. To read, create, update or delete a skill, call the `manage_skill` tool of the auto-learn MCP server. Use no other tool, and finish without writing any text.

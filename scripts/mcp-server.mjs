@@ -3,7 +3,7 @@
 // stdout. `mcp-server.mjs` serves Claude Code, `mcp-server.mjs --host=codex`
 // Codex, `mcp-server.mjs --host=copilot` GitHub Copilot and
 // `mcp-server.mjs --host=agy` Antigravity CLI.
-import { agyBuiltinSkillsDirs, parseHost, skillsDir } from "./lib/config.mjs";
+import { agyBuiltinSkillsDirs, agyExtraSkillsDirs, parseHost, skillsDir } from "./lib/config.mjs";
 import { lineSplitter, MAX_LINE_BYTES } from "./lib/jsonl.mjs";
 import { createMcpServer } from "./lib/mcp.mjs";
 
@@ -14,11 +14,18 @@ try {
 	process.stderr.write(`auto-learn: ${error.message}\n`);
 	process.exit(1);
 }
-// Codex starts the server in the plugin's folder and names each call's project in the call itself; Copilot names the session's folder in COPILOT_SESSION_CWD, and reads ~/.agents/skills, Codex's folder, besides its own; agy names the project of a review in AUTO_LEARN_PROJECT_DIR, which the review's worker sets, and refuses the names of its builtin skills.
+// Codex starts the server in the plugin's folder and names each call's project in the call itself; Copilot names the session's folder in COPILOT_SESSION_CWD, and reads ~/.agents/skills, Codex's folder, besides its own; agy names the project of a review in AUTO_LEARN_PROJECT_DIR, reads ~/.agents/skills and its other personal folders alongside ~/.gemini/config/skills, and refuses the names of its builtin skills.
 const contexts = {
 	codex: () => ({ skillsDir: skillsDir(process.env, host), host }),
 	copilot: () => ({ skillsDir: skillsDir(process.env, host), projectDir: process.env.COPILOT_SESSION_CWD || undefined, agentsSkillsDir: skillsDir({}, "codex"), host }),
-	agy: () => ({ skillsDir: skillsDir(process.env, host), projectDir: process.env.AUTO_LEARN_PROJECT_DIR || process.cwd(), builtinSkillsDirs: agyBuiltinSkillsDirs(), host }),
+	agy: () => ({
+		skillsDir: skillsDir(process.env, host),
+		projectDir: process.env.AUTO_LEARN_PROJECT_DIR || process.cwd(),
+		agentsSkillsDir: skillsDir({}, "codex"),
+		otherSkillsDirs: agyExtraSkillsDirs(),
+		builtinSkillsDirs: agyBuiltinSkillsDirs(),
+		host,
+	}),
 	claude: () => ({ skillsDir: skillsDir(), projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() }),
 };
 const handle = createMcpServer(contexts[host]());

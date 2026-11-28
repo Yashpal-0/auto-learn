@@ -205,26 +205,45 @@ test("the server script serves GitHub Copilot with --host=copilot: its skill lib
 	child.stdin.end();
 });
 
-test("the Antigravity CLI server describes the tool for Antigravity and offers no read action", async (t) => {
+test("the Antigravity CLI server describes the tool for Antigravity and offers revisioned read, update and delete", async (t) => {
 	const root = await tempDir(t);
-	const handle = createMcpServer({ skillsDir: path.join(root, "skills"), host: "agy" });
+	const skillsDir = path.join(root, "skills");
+	const handle = createMcpServer({ skillsDir, host: "agy" });
+	const other = createMcpServer({ skillsDir, host: "agy" });
 	const [tool] = (await handle({ jsonrpc: "2.0", id: 1, method: "tools/list" })).result.tools;
 	assert.match(tool.description, /Antigravity/);
 	assert.match(tool.inputSchema.properties.description.description, /Antigravity matches tasks against it/);
-	assert.deepEqual(tool.inputSchema.properties.action.enum, ["create", "update", "delete"]);
-	assert.equal(tool.inputSchema.properties.revision, undefined);
+	assert.deepEqual(tool.inputSchema.properties.action.enum, ["read", "create", "update", "delete"]);
+	assert.equal(tool.inputSchema.properties.revision.type, "string");
 	assert.doesNotMatch(JSON.stringify(tool), /Claude|Codex|Copilot/);
+
+	await handle(call(2, createArgs));
+	const withoutRevision = await handle(call(3, { ...createArgs, action: "update", body: "No read first." }));
+	assert.equal(withoutRevision.result.isError, true);
+	assert.match(withoutRevision.result.content[0].text, /read.*revision/i);
+
+	const read = await handle(call(4, { action: "read", name: createArgs.name }));
+	assert.equal(read.result.isError, undefined);
+	const snapshot = JSON.parse(read.result.content[0].text);
+	const updated = await other(call(5, { ...createArgs, action: "update", body: "Updated steps.", revision: snapshot.revision }));
+	assert.equal(updated.result.isError, undefined);
+	const stale = await handle(call(6, { ...createArgs, action: "delete", revision: snapshot.revision }));
+	assert.equal(stale.result.isError, true);
+	assert.match(stale.result.content[0].text, /changed.*read/i);
 });
 
-test("the server script serves Antigravity CLI with --host=agy: its skill library, AUTO_LEARN_PROJECT_DIR as the project, and its builtin skills as taken names", async (t) => {
+test("the server script serves Antigravity CLI with --host=agy: its skill library, AUTO_LEARN_PROJECT_DIR as the project, and ~/.agents, CLI personal and builtin skills as taken names", async (t) => {
 	const root = await tempDir(t);
 	const home = path.join(root, "home");
 	const projectDir = path.join(root, "project");
-	const authored = async (dir, name) => {
+	const authored = async (dir, name, declaredName = name) => {
 		await fs.mkdir(path.join(dir, name), { recursive: true });
-		await fs.writeFile(path.join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: Not ours\n---\n\nSteps.\n`);
+		await fs.writeFile(path.join(dir, name, "SKILL.md"), `---\nname: ${declaredName}\ndescription: Not ours\n---\n\nSteps.\n`);
 	};
 	await authored(path.join(projectDir, ".agents", "skills"), "deploy-docs");
+	await authored(path.join(home, ".agents", "skills"), "shared-agent-skill");
+	await authored(path.join(home, ".gemini", "antigravity-cli", "skills"), "cli-personal");
+	await authored(path.join(home, ".gemini", "skills"), "gemini-shared-folder", "gemini-shared");
 	await authored(path.join(home, ".gemini", "antigravity-cli", "builtin", "skills"), "plugin");
 	await authored(path.join(home, ".gemini", "antigravity", "builtin", "skills"), "app-only");
 	const env = { ...process.env, HOME: home, USERPROFILE: home, AUTO_LEARN_PROJECT_DIR: projectDir };
@@ -239,10 +258,18 @@ test("the server script serves Antigravity CLI with --host=agy: its skill librar
 		return JSON.parse((await replies.next()).value).result.content[0].text;
 	};
 	assert.match(await ask(1, createArgs), /another name/);
-	assert.match(await ask(2, { ...createArgs, name: "plugin" }), /another name/);
-	assert.match(await ask(3, { ...createArgs, name: "app-only" }), /another name/);
-	assert.match(await ask(4, { ...createArgs, name: "ship-docs" }), /^Created skill/);
+	assert.match(await ask(2, { ...createArgs, name: "shared-agent-skill" }), /another name/);
+	assert.match(await ask(3, { ...createArgs, name: "cli-personal" }), /another name/);
+	assert.match(await ask(4, { ...createArgs, name: "gemini-shared" }), /another name/);
+	assert.match(await ask(5, { ...createArgs, name: "plugin" }), /another name/);
+	assert.match(await ask(6, { ...createArgs, name: "app-only" }), /another name/);
+	assert.match(await ask(7, { ...createArgs, name: "ship-docs" }), /^Created skill/);
 	await fs.access(path.join(home, ".gemini", "config", "skills", "ship-docs", "SKILL.md"));
+	const snapshot = JSON.parse(await ask(8, { action: "read", name: "ship-docs" }));
+	assert.match(snapshot.content, /1\. Build\./);
+	assert.match(await ask(9, { ...createArgs, action: "update", name: "ship-docs", body: "1. Build.\n2. Verify.", revision: snapshot.revision }), /^Updated skill/);
+	const updated = JSON.parse(await ask(10, { action: "read", name: "ship-docs" }));
+	assert.match(await ask(11, { action: "delete", name: "ship-docs", revision: updated.revision }), /^Deleted skill/);
 	child.stdin.end();
 });
 
